@@ -1,0 +1,21 @@
+{
+  "target": "linux/amd64",
+  "http": "127.0.0.1:56741",
+  "workdir": "/usr/src/kernel/workdir",
+  "kernel_obj": "/usr/src/kernel/linux-6.17.8",
+  "image": "/usr/src/kernel/image/bullseye.img",
+  "sshkey": "/usr/src/kernel/image/bullseye.id_rsa",
+  "syzkaller": "/usr/src/kernel/syzkaller",
+  "procs": 4,
+  "type": "qemu",
+  "vm": {
+    "count": 2,
+    "kernel": "/usr/src/kernel/linux-6.17.8/arch/x86/boot/bzImage",
+    "cmdline": "root=/dev/sda console=ttyS0 net.ifnames=0 biosdevname=0",
+    "cpu": 2,
+    "mem": 2048
+  },
+  "reproduce": true,
+  "sandbox": "none",
+  "cover": false
+}

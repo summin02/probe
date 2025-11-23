@@ -1,0 +1,168 @@
+--- /tmp/syzkaller-clean/executor/common_linux.h	2025-11-24 02:45:32.421846957 +0900
++++ /usr/src/kernel/syzkaller/executor/common_linux.h	2025-11-24 02:00:02.472793980 +0900
+@@ -874,15 +874,18 @@
+ #if SYZ_EXECUTOR || SYZ_WIFI || __NR_syz_80211_inject_frame || __NR_syz_80211_join_ibss
+ 
+ #define WIFI_INITIAL_DEVICE_COUNT 2
+-#define WIFI_MAC_BASE \
+-	{             \
+-	    0x08, 0x02, 0x11, 0x00, 0x00, 0x00}
+-#define WIFI_IBSS_BSSID \
+-	{               \
+-	    0x50, 0x50, 0x50, 0x50, 0x50, 0x50}
+-#define WIFI_IBSS_SSID \
+-	{              \
+-	    0x10, 0x10, 0x10, 0x10, 0x10, 0x10}
++#define WIFI_MAC_BASE                              \
++	{                                          \
++		0x08, 0x02, 0x11, 0x00, 0x00, 0x00 \
++	}
++#define WIFI_IBSS_BSSID                            \
++	{                                          \
++		0x50, 0x50, 0x50, 0x50, 0x50, 0x50 \
++	}
++#define WIFI_IBSS_SSID                             \
++	{                                          \
++		0x10, 0x10, 0x10, 0x10, 0x10, 0x10 \
++	}
+ #define WIFI_DEFAULT_FREQUENCY 2412
+ #define WIFI_DEFAULT_SIGNAL 0
+ #define WIFI_DEFAULT_RX_RATE 1
+@@ -5905,4 +5908,137 @@
+ 	return 0;
+ }
+ 
++#if SYZ_EXECUTOR
++
++#include <string.h>
++#include <sys/mman.h>
++
++// Global storage for OOB testing - must be outside extern "C" block
++static void* oob_buffers[16] = {0};
++static size_t oob_buffer_sizes[16] = {0};
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++long syz_oob_alloc(volatile long size, volatile long flags)
++{
++	if (size <= 0 || size > 4096) {
++		debug("syz_oob_alloc: invalid size %ld\n", size);
++		return -1;
++	}
++
++	int slot = -1;
++	for (int i = 0; i < 16; i++) {
++		if (oob_buffers[i] == NULL) {
++			slot = i;
++			break;
++		}
++	}
++
++	if (slot == -1) {
++		debug("syz_oob_alloc: no free slots\n");
++		return -1;
++	}
++
++	void* buf = mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++	if (buf == MAP_FAILED) {
++		debug("syz_oob_alloc: mmap failed: %s\n", strerror(errno));
++		return -1;
++	}
++
++	oob_buffers[slot] = buf;
++	oob_buffer_sizes[slot] = (size_t)size;
++
++	debug("syz_oob_alloc: allocated buffer %p size %ld at slot %d\n", buf, size, slot);
++	return (long)buf;
++}
++
++long syz_oob_write(volatile long buf_ptr, volatile long offset, volatile long data_ptr, volatile long count)
++{
++	if (!buf_ptr || !data_ptr) {
++		debug("syz_oob_write: null pointer\n");
++		return -1;
++	}
++
++	char* buf = (char*)buf_ptr;
++	char* data = (char*)data_ptr;
++
++	size_t buf_size = 0;
++	for (int i = 0; i < 16; i++) {
++		if (oob_buffers[i] == (void*)buf_ptr) {
++			buf_size = oob_buffer_sizes[i];
++			break;
++		}
++	}
++
++	if ((size_t)(offset + count) > buf_size) {
++		debug("syz_oob_write: potential OOB detected - buf_size=%zu, offset=%ld, count=%ld\n",
++		      buf_size, offset, count);
++	}
++
++	memcpy(buf + offset, data, (size_t)count);
++
++	debug("syz_oob_write: wrote %ld bytes at offset %ld\n", count, offset);
++	return count;
++}
++
++long syz_oob_read(volatile long buf_ptr, volatile long offset, volatile long data_ptr, volatile long count)
++{
++	if (!buf_ptr || !data_ptr) {
++		debug("syz_oob_read: null pointer\n");
++		return -1;
++	}
++
++	char* buf = (char*)buf_ptr;
++	char* data = (char*)data_ptr;
++
++	size_t buf_size = 0;
++	for (int i = 0; i < 16; i++) {
++		if (oob_buffers[i] == (void*)buf_ptr) {
++			buf_size = oob_buffer_sizes[i];
++			break;
++		}
++	}
++
++	if ((size_t)(offset + count) > buf_size) {
++		debug("syz_oob_read: potential OOB detected - buf_size=%zu, offset=%ld, count=%ld\n",
++		      buf_size, offset, count);
++	}
++
++	memcpy(data, buf + offset, (size_t)count);
++
++	debug("syz_oob_read: read %ld bytes from offset %ld\n", count, offset);
++	return count;
++}
++
++long syz_oob_boundary_test(volatile long buf_ptr, volatile long buf_size, volatile long access_offset, volatile long access_size)
++{
++	if (!buf_ptr) {
++		debug("syz_oob_boundary_test: null pointer\n");
++		return -1;
++	}
++
++	char* buf = (char*)buf_ptr;
++
++	debug("syz_oob_boundary_test: buf_size=%ld, access_offset=%ld, access_size=%ld\n", buf_size, access_offset, access_size);
++
++	volatile char test_val = buf[access_offset];
++	(void)test_val;
++	if (access_size > 1) {
++		for (long i = 0; i < access_size && access_offset + i < 4096; i++) {
++			buf[access_offset + i] = (char)(0xAA + (i % 8));
++		}
++	}
++
++	debug("syz_oob_boundary_test: completed boundary access\n");
++	return 0;
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
++
+ #endif

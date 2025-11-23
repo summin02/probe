@@ -1,0 +1,42 @@
+# Workspace directory (contains cloned Syzkaller)
+workspace/
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Syzkaller build outputs
+bin/
+pkg/
+
+# Test and coverage
+*.test
+*.out
+coverage.txt
+
+# Go specific
+go.work
+go.work.sum
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+workdir/
+
+# Config files with sensitive data
+configs/oob_fuzzer.cfg
+!configs/oob_fuzzer.cfg.template
