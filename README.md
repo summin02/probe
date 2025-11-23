@@ -49,8 +49,6 @@ chmod +x run.sh
 ./run.sh
 ```
 
-웹 UI: http://127.0.0.1:56741
-
 ## 📁 프로젝트 구조
 
 ```
@@ -98,3 +96,4 @@ Apache 2.0 - Syzkaller 라이센스를 따릅니다.
 - GitHub: [@summin02](https://github.com/summin02)
 - 버전: v2.0
 - 작성일: 2025-11-24
+
