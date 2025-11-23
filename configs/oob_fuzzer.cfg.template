@@ -6,14 +6,14 @@
   "image": "/usr/src/kernel/image/bullseye.img",
   "sshkey": "/usr/src/kernel/image/bullseye.id_rsa",
   "syzkaller": "/usr/src/kernel/syzkaller",
-  "procs": 4,
+  "procs": 12,
   "type": "qemu",
   "vm": {
-    "count": 2,
+    "count": 24,
     "kernel": "/usr/src/kernel/linux-6.17.8/arch/x86/boot/bzImage",
     "cmdline": "root=/dev/sda console=ttyS0 net.ifnames=0 biosdevname=0",
     "cpu": 2,
-    "mem": 2048
+    "mem": 5120
   },
   "reproduce": true,
   "sandbox": "none",
