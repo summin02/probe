@@ -70,7 +70,11 @@
   - **Tier 1 (치명적)**: KASANInvalidFree, KASANUseAfterFreeWrite, KASANWrite, KASANUseAfterFreeRead, KASANRead
   - **Tier 2 (중요)**: OOB 변형, KFENCEInvalidFree, NullPtrDerefBUG
   - **Tier 3 (낮음)**: WARNING, LOCKDEP, MemoryLeak, Hang, KCSAN
-- Tier 3 크래시는 별도 저장, 포커스 모드를 트리거하지 않음
+- Tier 3 처리: **통계만 기록** (로그 없음, 리포트 없음, repro 없음)
+  - `tier3-stat.json`에 타이틀 + 카운트만 기록 (예: "WARNING in xxx: 47회")
+  - 디스크 부담 없음 — 카운터만 유지
+  - 웹 대시보드에서 접힌 상태로 확인 가능
+  - 포커스 모드 및 repro 시도 절대 트리거하지 않음
 
 ### 1b. 크래시 중복 제거 파이프라인
 
@@ -96,7 +100,8 @@
     |         └─ 변종 E: munmap() → mmap()     (재할당 시도)
     |
     +-- 3단계: Impact score 필터
-    |       Tier 3는 포커스 모드 파이프라인에서 제외
+    |       Tier 3: 통계만 기록 (타이틀 + 카운트), 저장 없음
+    |       Tier 1/2: 그룹핑 + 전체 저장으로 진행
     |
     +-- 4단계: AI 분석 (그룹 단위, 크래시 개별이 아닌)
             전송: 그룹 대표 + 모든 변종 트리거 프로그램

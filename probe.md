@@ -71,7 +71,11 @@
   - **Tier 1 (Critical)**: KASANInvalidFree, KASANUseAfterFreeWrite, KASANWrite, KASANUseAfterFreeRead, KASANRead
   - **Tier 2 (Important)**: OOB variants, KFENCEInvalidFree, NullPtrDerefBUG
   - **Tier 3 (Low)**: WARNING, LOCKDEP, MemoryLeak, Hang, KCSAN
-- Tier 3 crashes stored separately, not triggering Focus Mode
+- Tier 3 handling: **statistics only** (no logs, no reports, no repro)
+  - Record title + count in `tier3-stat.json` (e.g., "WARNING in xxx: 47 times")
+  - No disk-heavy storage — only counters
+  - Viewable in web dashboard (collapsed section)
+  - Never triggers Focus Mode or repro attempts
 
 ### 1b. Crash Deduplication Pipeline
 
@@ -97,7 +101,8 @@ Crashes (thousands/day)
     |         └─ Variant E: munmap() → mmap()     (reallocation attempt)
     |
     +-- Stage 3: Impact score filter
-    |       Tier 3 excluded from Focus Mode pipeline
+    |       Tier 3: statistics only (title + count), no storage
+    |       Tier 1/2: proceed to grouping + full storage
     |
     +-- Stage 4: AI analysis (group-level, not per-crash)
             Send: group representative + all variant trigger programs
