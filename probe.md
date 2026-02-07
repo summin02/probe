@@ -18,42 +18,47 @@
 |                PROBE Custom Syzkaller                 |
 +------------------------------------------------------+
 |                                                       |
-|  [Phase 1] Crash Filtering                            |
+|  [Phase 1] Crash Filtering & Dedup Pipeline           |
 |    - Impact score based filtering                     |
-|    - Prioritize UAF/OOB reports only                  |
+|    - Grouping (not deletion) of similar crashes       |
+|    - Preserve variant diversity within groups         |
 |    - Suppress noise (WARNING, LOCKDEP, INFO_LEAK)     |
 |                                                       |
 |  [Phase 2] Focus Mode                                 |
-|    - High-severity crash triggers focused mutation     |
-|    - Hundreds~thousands of iterations (not just 25)    |
+|    - High-severity crash triggers focused mutation    |
+|    - Hundreds~thousands of iterations (not just 25)   |
 |    - Crash-type-specific mutation strategies           |
-|    - Auto-return on diminishing returns                |
+|    - Variant combination across groups                |
+|    - Auto-return on diminishing returns               |
 |                                                       |
 |  [Phase 3] AI Triage + Focus Guide                    |
-|    - LLM-based crash exploitability analysis           |
-|    - Mutation strategy suggestions for Focus Mode      |
-|    - Post-crash analysis (no hot-loop overhead)        |
+|    - Claude Haiku 4.5 for crash analysis              |
+|    - Mutation strategy suggestions for Focus Mode     |
+|    - Group-level analysis (not per-crash)             |
+|    - Post-crash analysis (no hot-loop overhead)       |
 |                                                       |
 |  [Phase 4] UAF/OOB Mutation Engine                    |
-|    - UAF pattern sequence generation                   |
-|    - OOB boundary value focused mutation               |
-|    - Custom syscall descriptions (uffd, io_uring, etc) |
+|    - UAF pattern sequence generation                  |
+|    - OOB boundary value focused mutation              |
+|    - Custom syscall descriptions (uffd, io_uring etc) |
 |                                                       |
 |  [Phase 5] eBPF Runtime Monitor                       |
-|    - Slab object lifecycle tracking (kprobe-based)     |
-|    - Exploitability scoring                            |
-|    - Real-time feedback to Focus Mode                  |
-|    - No kernel source modification (attach to existing |
-|      kprobes/tracepoints)                              |
+|    - Slab object lifecycle tracking (kprobe-based)    |
+|    - Exploitability scoring                           |
+|    - Real-time feedback to Focus Mode                 |
+|    - No kernel source modification (attach to         |
+|      existing kprobes/tracepoints)                    |
 |                                                       |
 +------------------------------------------------------+
 ```
 
-## Phase 1: Crash Filtering
+## Phase 1: Crash Filtering & Dedup Pipeline
 
-**Goal**: Eliminate noise, surface only high-severity crashes.
+**Goal**: Eliminate noise and deduplicate crashes while preserving variant diversity.
 
-**Current problem**: syzkaller treats all crashes equally — WARNING, LOCKDEP, hangs, and KASAN UAF writes all get the same treatment.
+**Current problem**: syzkaller treats all crashes equally — WARNING, LOCKDEP, hangs, and KASAN UAF writes all get the same treatment. Duplicate crashes flood the results.
+
+### 1a. Crash Severity Tiers
 
 **Modification targets**:
 - `pkg/report/crash/` — crash type classification
@@ -67,6 +72,40 @@
   - **Tier 2 (Important)**: OOB variants, KFENCEInvalidFree, NullPtrDerefBUG
   - **Tier 3 (Low)**: WARNING, LOCKDEP, MemoryLeak, Hang, KCSAN
 - Tier 3 crashes stored separately, not triggering Focus Mode
+
+### 1b. Crash Deduplication Pipeline
+
+**Key principle**: Group, don't delete. Same crash point can have different trigger paths with different exploitability.
+
+```
+Crashes (thousands/day)
+    |
+    +-- Stage 1: Exact duplicate removal
+    |       Match: title + stack trace + trigger program hash
+    |       Only removes 100% identical crashes
+    |
+    +-- Stage 2: Grouping (NOT deletion)
+    |       Group by: same stack trace / crash point
+    |       But PRESERVE different trigger programs (syscall sequences)
+    |       → Each group contains multiple variants
+    |
+    |       Example: "UAF at kfree+0x42" group (5 variants)
+    |         ├─ Variant A: close() → read()      (read UAF)
+    |         ├─ Variant B: close() → write()     (write UAF) ← more dangerous
+    |         ├─ Variant C: close() → ioctl()     (ioctl UAF)
+    |         ├─ Variant D: munmap() → read()     (different free path)
+    |         └─ Variant E: munmap() → mmap()     (reallocation attempt)
+    |
+    +-- Stage 3: Impact score filter
+    |       Tier 3 excluded from Focus Mode pipeline
+    |
+    +-- Stage 4: AI analysis (group-level, not per-crash)
+            Send: group representative + all variant trigger programs
+            → LLM identifies which variant is most exploitable
+            → Variant diversity = more options for Focus Mode
+```
+
+**Why grouping matters**: Same crash point ≠ same exploitability. A write-UAF and read-UAF at the same location have vastly different exploit potential. Deleting "duplicates" loses attack vectors that Focus Mode needs.
 
 ## Phase 2: Focus Mode
 
@@ -91,10 +130,13 @@ Normal Mode (exploration)
                 |     +-- UAF: vary free↔reuse gap
                 |     +-- OOB: explore size boundaries
                 |
-                +-- 2. Variant discovery
+                +-- 2. Variant discovery & combination
                 |     +-- Upgrade read-UAF → write-UAF
                 |     +-- Expand 1-byte OOB → larger OOB
                 |     +-- Find different vulns in same code path
+                |     +-- Cross-combine variants from same group
+                |     |     (e.g., Variant D's free path
+                |     |      + Variant B's write pattern)
                 |
                 +-- 3. Exit on diminishing returns
                       +-- N consecutive iterations with no new findings
@@ -118,15 +160,23 @@ Normal Mode (exploration)
 
 **Goal**: Use LLM for crash exploitability analysis and Focus Mode mutation strategy.
 
+**Model**: Claude Haiku 4.5 (via Anthropic API)
+- Rationale: Crash report analysis is structured text processing — small, fast model is sufficient
+- Managed by same provider as development tools (Anthropic) for convenience
+- Cost is negligible after dedup pipeline reduces to ~3-5 groups/day
+
 **Application points** (no hot-loop overhead):
 
-### 3a. Crash Exploitability Analysis
+### 3a. Crash Exploitability Analysis (Group-Level)
 ```
-Crash occurs → KASAN report + stack trace sent to LLM
+Crash group detected → Group representative + all variant programs sent to LLM
   → "This UAF in nft_set_elem can be exploited via
-     same-slab reallocation, privilege escalation possible"
+     same-slab reallocation, privilege escalation possible.
+     Variant B (write path) is most dangerous.
+     Variant D's free path combined with B's write
+     could yield a more reliable exploit."
   → Exploitability score + reasoning
-  → Informs Focus Mode entry decision
+  → Informs Focus Mode entry decision + which variant to prioritize
 ```
 
 ### 3b. Focus Mode Strategy
@@ -138,6 +188,17 @@ Focus Mode entry → crash program + context sent to LLM
      3. Add concurrent read() from another thread"
   → Mutation hints fed to focusJob
 ```
+
+### 3c. Cost Estimate
+
+| Scenario | LLM Calls/Day | Monthly Cost (Haiku 4.5) |
+|----------|---------------|--------------------------|
+| Low volume | 3-5 groups | ~$0.80 |
+| Medium volume | 10-15 groups | ~$2.50 |
+| High volume | 30-50 groups | ~$8.00 |
+
+Input per call: ~1,500 tokens (KASAN report + stack trace + variant list)
+Output per call: ~750 tokens (analysis + score + strategy)
 
 **Modification targets**:
 - New module in `pkg/` or `syz-manager/` for LLM integration
@@ -206,11 +267,27 @@ eBPF detects:
 
 | Phase | Component | Difficulty | Impact | Dependencies |
 |-------|-----------|-----------|--------|-------------|
-| 1 | Crash Filtering | Low | Immediate noise reduction | None |
-| 2 | Focus Mode | Medium | Deep exploitation of findings | Phase 1 |
-| 3 | AI Triage | Medium | Smart crash analysis | Phase 2 |
-| 4 | UAF/OOB Mutations | Medium | Higher vuln discovery rate | None (parallel with 2-3) |
-| 5 | eBPF Monitor | High | Real-time exploitability | Phase 2 |
+| 1 | Crash Filtering & Dedup Pipeline | Low | Immediate noise reduction + variant preservation | None |
+| 2 | Focus Mode | Medium | Deep exploitation of high-severity findings | Phase 1 (needs severity tiers) |
+| 3 | AI Triage (Claude Haiku 4.5) | Medium | Smart group-level crash analysis | Phase 1 (needs dedup groups), Phase 2 (needs Focus Mode) |
+| 4 | UAF/OOB Mutation Engine | Medium-High | Higher vuln discovery rate | None (can parallel with 2-3) |
+| 5 | eBPF Runtime Monitor | High | Real-time exploitability feedback | Phase 2 (needs Focus Mode feedback loop) |
+
+**Critical path**: Phase 1 → Phase 2 → Phase 3 (sequential dependency)
+**Parallel track**: Phase 4 can start any time independently
+
+## Related Research
+
+| Paper | Venue | Relevance |
+|-------|-------|-----------|
+| CountDown | CCS 2024 | UAF-specific fuzzing (refcount-based), 66.1% more UAFs — Phase 4 reference |
+| FUZE | USENIX Sec 2018 | Kernel UAF exploit generation automation — Phase 5 exploitability criteria |
+| ACTOR | USENIX Sec 2023 | Action-based fuzzing (alloc/free actions), 41 unknown bugs — Phase 4 reference |
+| SyzScope | USENIX Sec 2022 | 15% of "low-risk" bugs are actually high-risk — Phase 1+2 motivation |
+| GREBE | IEEE S&P 2022 | Turned 6 "unexploitable" bugs into arbitrary code execution — Phase 2 variant discovery |
+| SYZVEGAS | USENIX Sec 2021 | RL-based seed scheduling, 38.7% coverage improvement — Phase 2 scheduling reference |
+| HEALER | SOSP 2021 | Syscall relation learning, 28% coverage improvement — Phase 4 dependency mutations |
+| KernelGPT | ASPLOS 2025 | LLM for syscall description generation, 24 new bugs, 11 CVEs — Phase 3+4 LLM usage |
 
 ## Key Files Reference
 
