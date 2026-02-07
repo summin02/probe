@@ -407,7 +407,15 @@ func (mgr *Manager) heartbeatLoop() {
 			continue
 		}
 		mgr.statFuzzingTime.Add(diff * mgr.servStats.StatNumFuzzing.Val())
+		// PROBE: Add mode indicator to periodic stats log.
+		mode := "normal"
+		if f := mgr.fuzzer.Load(); f != nil {
+			if active, title := f.FocusStatus(); active {
+				mode = fmt.Sprintf("FOCUS[%v]", title)
+			}
+		}
 		buf := new(bytes.Buffer)
+		fmt.Fprintf(buf, "mode=%v ", mode)
 		for _, stat := range stat.Collect(stat.Console) {
 			fmt.Fprintf(buf, "%v=%v ", stat.Name, stat.Value)
 		}

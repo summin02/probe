@@ -40,9 +40,10 @@ type Fuzzer struct {
 	ctRegenerate chan struct{}
 
 	// PROBE: Focus Mode state.
-	focusMu     sync.Mutex
-	focusTitles map[string]bool // titles that have been focused (prevents re-focus)
-	focusActive bool            // true while a focus job is running
+	focusMu      sync.Mutex
+	focusTitles  map[string]bool // titles that have been focused (prevents re-focus)
+	focusActive  bool            // true while a focus job is running
+	focusTarget  string          // title of the current focus target
 
 	execQueues
 }
@@ -385,6 +386,13 @@ func (fuzzer *Fuzzer) AddCandidates(candidates []Candidate) {
 	}
 }
 
+// PROBE: FocusStatus returns whether a focus job is active and its target title.
+func (fuzzer *Fuzzer) FocusStatus() (active bool, title string) {
+	fuzzer.focusMu.Lock()
+	defer fuzzer.focusMu.Unlock()
+	return fuzzer.focusActive, fuzzer.focusTarget
+}
+
 // PROBE: AddFocusCandidate queues a high-severity crash program for intensive mutation.
 // Returns false if the title is already being focused, was already focused, or another focus job is active.
 func (fuzzer *Fuzzer) AddFocusCandidate(p *prog.Prog, title string, tier int) bool {
@@ -397,6 +405,7 @@ func (fuzzer *Fuzzer) AddFocusCandidate(p *prog.Prog, title string, tier int) bo
 
 	fuzzer.focusTitles[title] = true
 	fuzzer.focusActive = true
+	fuzzer.focusTarget = title
 
 	var calls []string
 	for i := range p.Calls {

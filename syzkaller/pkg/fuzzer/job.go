@@ -492,6 +492,7 @@ func (job *focusJob) run(fuzzer *Fuzzer) {
 	defer func() {
 		fuzzer.focusMu.Lock()
 		fuzzer.focusActive = false
+		fuzzer.focusTarget = ""
 		fuzzer.focusMu.Unlock()
 	}()
 
