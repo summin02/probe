@@ -52,7 +52,7 @@
 +------------------------------------------------------+
 ```
 
-## Phase 1: Crash Filtering & Dedup Pipeline
+## Phase 1: Crash Filtering & Dedup Pipeline [DONE]
 
 **Goal**: Eliminate noise and deduplicate crashes while preserving variant diversity.
 
@@ -278,7 +278,7 @@ eBPF detects:
 
 | Phase | Component | Difficulty | Impact | Dependencies |
 |-------|-----------|-----------|--------|-------------|
-| 1 | Crash Filtering & Dedup Pipeline | Low | Immediate noise reduction + variant preservation | None |
+| 1 | Crash Filtering & Dedup Pipeline | Low | Immediate noise reduction + variant preservation | None | **DONE** |
 | 2 | Focus Mode | Medium | Deep exploitation of high-severity findings | Phase 1 (needs severity tiers) |
 | 3 | AI Triage (Claude Haiku 4.5) | Medium | Smart group-level crash analysis | Phase 1 (needs dedup groups), Phase 2 (needs Focus Mode) |
 | 4 | UAF/OOB Mutation Engine | Medium-High | Higher vuln discovery rate | None (can parallel with 2-3) |
