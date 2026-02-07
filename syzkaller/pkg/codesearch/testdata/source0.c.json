@@ -1,0 +1,352 @@
+{
+	"definitions": [
+		{
+			"name": "close",
+			"type": "int ()",
+			"kind": "function",
+			"body": {
+				"file": "source0.c",
+				"start_line": 19,
+				"end_line": 22
+			},
+			"comment": {}
+		},
+		{
+			"name": "field_refs",
+			"type": "int (struct some_struct *, union some_union *)",
+			"kind": "function",
+			"body": {
+				"file": "source0.c",
+				"start_line": 39,
+				"end_line": 46
+			},
+			"comment": {},
+			"refs": [
+				{
+					"name": "some_struct",
+					"kind": "uses",
+					"entity_kind": "struct",
+					"line": 39
+				},
+				{
+					"name": "some_union",
+					"kind": "uses",
+					"entity_kind": "union",
+					"line": 39
+				},
+				{
+					"name": "some_struct::x",
+					"kind": "writes",
+					"entity_kind": "field",
+					"line": 41
+				},
+				{
+					"name": "some_struct::y",
+					"kind": "reads",
+					"entity_kind": "field",
+					"line": 41
+				},
+				{
+					"name": "some_struct::x",
+					"kind": "takes-address-of",
+					"entity_kind": "field",
+					"line": 42
+				},
+				{
+					"name": "some_union::p",
+					"kind": "writes",
+					"entity_kind": "field",
+					"line": 43
+				},
+				{
+					"name": "some_struct::x",
+					"kind": "writes",
+					"entity_kind": "field",
+					"line": 44
+				},
+				{
+					"name": "some_union::s",
+					"kind": "reads",
+					"entity_kind": "field",
+					"line": 44
+				},
+				{
+					"name": "some_struct::x",
+					"kind": "reads",
+					"entity_kind": "field",
+					"line": 45
+				}
+			]
+		},
+		{
+			"name": "func_accepting_a_struct",
+			"type": "int (struct some_struct *)",
+			"kind": "function",
+			"body": {
+				"file": "source0.c",
+				"start_line": 29,
+				"end_line": 33
+			},
+			"comment": {},
+			"refs": [
+				{
+					"name": "some_struct",
+					"kind": "uses",
+					"entity_kind": "struct",
+					"line": 29
+				},
+				{
+					"name": "some_struct::x",
+					"kind": "reads",
+					"entity_kind": "field",
+					"line": 31
+				},
+				{
+					"name": "some_struct_t",
+					"kind": "uses",
+					"entity_kind": "typedef",
+					"line": 31
+				},
+				{
+					"name": "some_struct",
+					"kind": "uses",
+					"entity_kind": "struct",
+					"line": 31
+				},
+				{
+					"name": "some_union::x",
+					"kind": "reads",
+					"entity_kind": "field",
+					"line": 32
+				},
+				{
+					"name": "some_union",
+					"kind": "uses",
+					"entity_kind": "union",
+					"line": 32
+				}
+			]
+		},
+		{
+			"name": "func_in_header",
+			"type": "int ()",
+			"kind": "function",
+			"is_static": true,
+			"body": {
+				"file": "source0.h",
+				"start_line": 12,
+				"end_line": 15
+			},
+			"comment": {}
+		},
+		{
+			"name": "function_with_comment_in_header",
+			"type": "void ()",
+			"kind": "function",
+			"body": {
+				"file": "source0.c",
+				"start_line": 24,
+				"end_line": 27
+			},
+			"comment": {},
+			"refs": [
+				{
+					"name": "same_name_in_several_files",
+					"kind": "calls",
+					"entity_kind": "function",
+					"line": 26
+				}
+			]
+		},
+		{
+			"name": "function_with_quotes_in_type",
+			"type": "void (void  __attribute__((btf_type_tag(\"user\")))*)",
+			"kind": "function",
+			"body": {
+				"file": "source0.c",
+				"start_line": 35,
+				"end_line": 37
+			},
+			"comment": {}
+		},
+		{
+			"name": "open",
+			"type": "int ()",
+			"kind": "function",
+			"body": {
+				"file": "source0.c",
+				"start_line": 11,
+				"end_line": 17
+			},
+			"comment": {
+				"file": "source0.c",
+				"start_line": 11,
+				"end_line": 13
+			}
+		},
+		{
+			"name": "another_struct",
+			"kind": "struct",
+			"body": {
+				"file": "source0.h",
+				"start_line": 36,
+				"end_line": 38
+			},
+			"comment": {},
+			"fields": [
+				{
+					"name": "x",
+					"offset": 0,
+					"size": 32
+				}
+			]
+		},
+		{
+			"name": "some_struct",
+			"kind": "struct",
+			"body": {
+				"file": "source0.h",
+				"start_line": 17,
+				"end_line": 20
+			},
+			"comment": {},
+			"fields": [
+				{
+					"name": "x",
+					"offset": 0,
+					"size": 32
+				},
+				{
+					"name": "y",
+					"offset": 32,
+					"size": 32
+				}
+			]
+		},
+		{
+			"name": "some_struct_with_a_comment",
+			"kind": "struct",
+			"body": {
+				"file": "source0.h",
+				"start_line": 24,
+				"end_line": 30
+			},
+			"comment": {
+				"file": "source0.h",
+				"start_line": 24,
+				"end_line": 26
+			},
+			"fields": [
+				{
+					"name": "x",
+					"offset": 0,
+					"size": 32
+				},
+				{
+					"name": "other_struct",
+					"offset": 64,
+					"size": 64
+				}
+			]
+		},
+		{
+			"name": "struct_in_c_file",
+			"kind": "struct",
+			"body": {
+				"file": "source0.c",
+				"start_line": 6,
+				"end_line": 9
+			},
+			"comment": {},
+			"fields": [
+				{
+					"name": "X",
+					"offset": 0,
+					"size": 32
+				},
+				{
+					"name": "by_value",
+					"offset": 32,
+					"size": 64
+				}
+			]
+		},
+		{
+			"name": "some_union",
+			"kind": "union",
+			"body": {
+				"file": "source0.h",
+				"start_line": 40,
+				"end_line": 44
+			},
+			"comment": {},
+			"fields": [
+				{
+					"name": "x",
+					"offset": 0,
+					"size": 32
+				},
+				{
+					"name": "p",
+					"offset": 0,
+					"size": 64
+				},
+				{
+					"name": "s",
+					"offset": 0,
+					"size": 64
+				}
+			]
+		},
+		{
+			"name": "some_enum",
+			"kind": "enum",
+			"body": {
+				"file": "source0.h",
+				"start_line": 46,
+				"end_line": 49
+			},
+			"comment": {}
+		},
+		{
+			"name": "another_struct_t",
+			"kind": "typedef",
+			"body": {
+				"file": "source0.h",
+				"start_line": 36,
+				"end_line": 38
+			},
+			"comment": {}
+		},
+		{
+			"name": "some_enum_t",
+			"kind": "typedef",
+			"body": {
+				"file": "source0.h",
+				"start_line": 51,
+				"end_line": 51
+			},
+			"comment": {}
+		},
+		{
+			"name": "some_struct_t",
+			"kind": "typedef",
+			"body": {
+				"file": "source0.h",
+				"start_line": 22,
+				"end_line": 22
+			},
+			"comment": {}
+		},
+		{
+			"name": "typedefed_struct_t",
+			"kind": "typedef",
+			"body": {
+				"file": "source0.h",
+				"start_line": 32,
+				"end_line": 34
+			},
+			"comment": {}
+		}
+	]
+}

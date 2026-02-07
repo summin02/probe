@@ -1,0 +1,6 @@
+# UNCONFIGURED FSTAB FOR BASE SYSTEM
+/dev/root / ext4 defaults 0 0
+debugfs /sys/kernel/debug debugfs defaults 0 0
+securityfs /sys/kernel/security securityfs defaults 0 0
+configfs /sys/kernel/config/ configfs defaults 0 0
+binfmt_misc /proc/sys/fs/binfmt_misc binfmt_misc defaults 0 0

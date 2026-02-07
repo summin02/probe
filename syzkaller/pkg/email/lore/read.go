@@ -1,0 +1,63 @@
+// Copyright 2023 syzkaller project authors. All rights reserved.
+// Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
+
+package lore
+
+import (
+	"bytes"
+	"fmt"
+	"time"
+
+	"github.com/google/syzkaller/pkg/email"
+	"github.com/google/syzkaller/pkg/vcs"
+)
+
+type EmailReader struct {
+	vcs.CommitShort
+	Read func() ([]byte, error)
+}
+
+// ReadArchive queries the parsed messages from a single LKML message archive.
+func ReadArchive(repo vcs.Repo, afterCommit string, afterTime time.Time) ([]EmailReader, error) {
+	commits, err := repo.LatestCommits(afterCommit, afterTime)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get recent commits: %w", err)
+	}
+	var ret []EmailReader
+	for _, iterCommit := range commits {
+		commit := iterCommit
+		ret = append(ret, EmailReader{
+			CommitShort: commit,
+			Read: func() ([]byte, error) {
+				return repo.Object("m", commit.Hash)
+			},
+		})
+	}
+	return ret, nil
+}
+
+type Email struct {
+	*email.Email
+	HasPatch bool
+}
+
+func (er *EmailReader) Parse(emails, domains []string) (*Email, error) {
+	body, err := er.Read()
+	if err != nil {
+		return nil, err
+	}
+	return emailFromRaw(body, emails, domains)
+}
+
+func emailFromRaw(body []byte, emails, domains []string) (*Email, error) {
+	msg, err := email.Parse(bytes.NewReader(body), emails, nil, domains)
+	if err != nil {
+		return nil, err
+	}
+	ret := &Email{Email: msg, HasPatch: msg.Patch != ""}
+	// Keep memory consumption low.
+	ret.Body = ""
+	ret.Patch = ""
+	// TODO: If emails/domains are nil, we also don't need to parse the body at all.
+	return ret, nil
+}

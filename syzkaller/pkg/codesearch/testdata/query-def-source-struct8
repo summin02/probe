@@ -1,0 +1,8 @@
+def-source source0.c some_enum yes
+
+enum some_enum is defined in source0.h:
+
+  46:	enum some_enum {
+  47:		enum_foo = 1,
+  48:		enum_bar = 2,
+  49:	};

@@ -1,0 +1,11 @@
+e23882ace12a9ab0aa7d4fe38690b8c9  usr/bin/curl
+78f260911fb7f60b6e0e524743bf2360  usr/bin/wcurl
+2bcd8f2198ba105716f3bdfd3478762e  usr/share/doc/curl/NEWS.Debian.gz
+a57b381d303c66863c109e18936999f1  usr/share/doc/curl/README.Debian
+3ef879c04fd2ce61701f7b47fd0d2600  usr/share/doc/curl/changelog.Debian.gz
+7b38128913fcc930862d439edae97971  usr/share/doc/curl/changelog.gz
+200a7db36e5c09d45cd102ca67ac9381  usr/share/doc/curl/copyright
+42a96fd05dfefde93cb36a5c90989483  usr/share/fish/vendor_completions.d/curl.fish
+8e2e9a3f4525e462ebc9e82c80e4a988  usr/share/man/man1/curl.1.gz
+86138b2e9b567143e1b50d572bae34be  usr/share/man/man1/wcurl.1.gz
+fc09ebacfe76e1d6323f91274da4fad5  usr/share/zsh/vendor-completions/_curl

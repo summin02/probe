@@ -1,0 +1,1 @@
+../../../lib/linux/uapi/parisc/asm/stat.h

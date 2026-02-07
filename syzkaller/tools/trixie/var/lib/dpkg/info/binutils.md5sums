@@ -1,0 +1,17 @@
+9ef0ad52fe3e0ad424927ad653d29983  etc/gprofng.rc
+69141b1b500436aa6e38a6b67f33f92b  usr/bin/gprofng
+9f5d2c971e039a3820d59f02321cc104  usr/bin/gprofng-archive
+66bf8090b6e84f730f3e1e094940a69b  usr/bin/gprofng-collect-app
+b6611743942a541bc08ab5a1fa6db439  usr/bin/gprofng-display-html
+f741e1c6bdf8b808aa3960fcb4ae8224  usr/bin/gprofng-display-src
+f9a9f9695c546958f2ddf52d052ceb62  usr/bin/gprofng-display-text
+2cbe8d210492ef28611bcbbc07a8650e  usr/share/bug/binutils/presubj
+0a8345bdf26ae81e986778fc5327b8e8  usr/share/doc/binutils/changelog.Debian.gz
+4a6d21177a13b1ae158f83f644a857c8  usr/share/doc/binutils/copyright
+6399b5a40955969b4ba1f59d009c72dc  usr/share/lintian/overrides/binutils
+c1bb9c6ad558948abc424a3d1ae37734  usr/share/man/man1/gprofng-archive.1.gz
+56bb7d14a14335e33280040f3fe2c6a1  usr/share/man/man1/gprofng-collect-app.1.gz
+622a3752491878ea312ade9a72457085  usr/share/man/man1/gprofng-display-html.1.gz
+3a07be6f4346fe09d4d7b10c8f63516a  usr/share/man/man1/gprofng-display-src.1.gz
+4c42b595742867370e340173f025be1b  usr/share/man/man1/gprofng-display-text.1.gz
+ddd7daf7df70f20952f13c20883ace50  usr/share/man/man1/gprofng.1.gz

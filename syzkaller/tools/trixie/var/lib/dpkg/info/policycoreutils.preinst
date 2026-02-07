@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+# Automatically added by dh_installdeb/13.24.2
+dpkg-maintscript-helper rm_conffile /etc/default/sandbox 2.1.13-1\~ -- "$@"
+dpkg-maintscript-helper rm_conffile /etc/init.d/sandbox 2.1.13-1\~ -- "$@"
+dpkg-maintscript-helper mv_conffile /etc/init.d/debian-selinux-autorelabel /etc/init.d/selinux-autorelabel 2.5-2\~ -- "$@"
+# End automatically added section
+# Automatically added by dh_installinit/13.24.2
+if [ "$1" = "install" ] && [ -n "$2" ] && [ -e "/etc/init.d/selinux-autorelabel" ] ; then
+	chmod +x "/etc/init.d/selinux-autorelabel" >/dev/null || true
+fi
+# End automatically added section
+# Automatically added by dh_installsystemd/13.24.2
+if [ -z "$DPKG_ROOT" ] && [ "$1" = upgrade ] && [ -d /run/systemd/system ] ; then
+	deb-systemd-invoke stop 'selinux-autorelabel.service' 'selinux-autorelabel.target' >/dev/null || true
+fi
+# End automatically added section
+# Automatically added by dh_installsystemd/13.24.2
+if [ -z "$DPKG_ROOT" ] && [ "$1" = upgrade ] && [ -d /run/systemd/system ] ; then
+	deb-systemd-invoke stop 'selinux-autorelabel-mark.service' >/dev/null || true
+fi
+# End automatically added section

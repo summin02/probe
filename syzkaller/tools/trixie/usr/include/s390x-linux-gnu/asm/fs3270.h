@@ -1,0 +1,1 @@
+../../../lib/linux/uapi/s390/asm/fs3270.h

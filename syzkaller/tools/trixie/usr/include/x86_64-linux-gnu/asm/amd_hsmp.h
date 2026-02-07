@@ -1,0 +1,1 @@
+../../../lib/linux/uapi/x86/asm/amd_hsmp.h

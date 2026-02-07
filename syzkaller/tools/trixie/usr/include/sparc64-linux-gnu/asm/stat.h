@@ -1,0 +1,1 @@
+../../../lib/linux/uapi/sparc/asm/stat.h

@@ -1,0 +1,11 @@
+dir-index /mm/..
+
+directory /mm/.. subdirs:
+ - mm
+
+directory /mm/.. files:
+ - refs.c
+ - source0.c
+ - source0.h
+ - source1.c
+ - source2.c

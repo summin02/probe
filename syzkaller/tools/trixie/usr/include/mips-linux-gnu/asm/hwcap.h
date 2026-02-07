@@ -1,0 +1,1 @@
+../../../lib/linux/uapi/mips/asm/hwcap.h

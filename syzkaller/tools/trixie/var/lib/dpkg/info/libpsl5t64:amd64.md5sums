@@ -1,0 +1,6 @@
+68d6ef3b75242913cc9ae20945cb9b23  usr/lib/x86_64-linux-gnu/libpsl.so.5.3.4
+951dd9445cc61723fc7ad30dc45f5685  usr/share/doc/libpsl5t64/changelog.Debian.amd64.gz
+4b2baaf1d3908e7f17a733e2c594c72a  usr/share/doc/libpsl5t64/changelog.Debian.gz
+30876c4af76afd0bf39c15a301ed6143  usr/share/doc/libpsl5t64/changelog.gz
+07685d13c2d767f3f2f019744e361c0f  usr/share/doc/libpsl5t64/copyright
+6a6310d25226c3bb7bb56ddd7601c132  usr/share/lintian/overrides/libpsl5t64

@@ -1,0 +1,28 @@
+#! /bin/sh
+
+set -e
+
+statedir='/var/lib/ucf';
+
+case "$1" in
+  install)
+      echo >&2 "Moving old data out of the way"
+      for i in $(seq 6 -1 0); do
+	  if [ -e "${statedir}/hashfile.${i}" ]; then
+	      cp -f "${statedir}/hashfile.${i}" \
+		  "${statedir}/hashfile.$(($i+1))"
+	  fi
+      done
+      if [ -e "$statedir/hashfile" ]; then
+	  cp -f "$statedir/hashfile"  "$statedir/hashfile.0"
+      fi
+    ;;
+  upgrade) ;;
+  abort-upgrade) ;;
+  *) echo "$0: didn't understand being called with \`$1'" 1>&2
+     exit 0;;
+esac
+
+
+
+exit 0

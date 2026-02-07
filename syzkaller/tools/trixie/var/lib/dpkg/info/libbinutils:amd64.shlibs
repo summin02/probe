@@ -1,0 +1,2 @@
+libbfd 2.44-system libbinutils (>= 2.44), libbinutils (<< 2.44.1)
+libopcodes 2.44-system libbinutils (>= 2.44), libbinutils (<< 2.44.1)

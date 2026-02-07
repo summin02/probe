@@ -1,0 +1,3 @@
+ucf: no-debconf-config
+ucf: unused-debconf-template ucf/title [templates:2]
+ucf: debconf-is-not-a-registry [usr/bin/ucf:662]

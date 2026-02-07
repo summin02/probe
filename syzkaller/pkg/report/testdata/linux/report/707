@@ -1,0 +1,7 @@
+TITLE: go runtime error
+TYPE: DoS
+
+fatal error: runtimer: bad p
+
+runtime stack:
+fatal: bad g in signal handler

@@ -1,0 +1,1 @@
+../../../lib/linux/uapi/s390/asm/resource.h

@@ -1,0 +1,291 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: strace
+Source: https://github.com/strace/strace
+Files-Excluded: debian
+
+Files: *
+Copyright:  1991, 1992 Paul Kranenburg <pk@cs.few.eur.nl>
+            1993 Branko Lankester <branko@hacktic.nl>
+            1993 Ulrich Pegelow <pegelow@moorea.uni-muenster.de>
+            1995, 1996 Michael Elizabeth Chastain <mec@duracef.shout.net>
+            1993, 1994, 1995, 1996 Rick Sladkey <jrs@world.std.com>
+            1998-2001 Wichert Akkerman <wakkerma@deephackmode.org>
+            2001-2022 The strace developers.
+License: LGPL-2.1+
+
+Files: src/disable_ptrace_*.c
+       tests/*
+       tests-mx32/*
+       tests-m32/*
+Copyright:  2011-2024 The strace developers
+	    2017-2018 Dmitry V. Levin <ldv@strace.io>
+License: GPL-2
+
+Files: tests/ioctl_kvm_run_common.c
+       tests-m32/ioctl_kvm_run_common.c
+       tests-mx32/ioctl_kvm_run_common.c
+Copyright: Josh Triplett <josh@joshtriplett.org>
+           2015 Intel Corporation
+           2017-2023 The strace developers
+License: Expat
+
+Files:  bundled/linux/*
+Copyright:
+	1999-2010 David Woodhouse <dwmw2@infradead.org>
+	2005 Topspin Communications
+	2005, 2006 Cisco Systems
+	2005 PathScale, Inc
+	2006 Mellanox Technologies
+	2000-2002 Joakim Axelsson <gozem@linux.nu>
+	2003-2011 Jozsef Kadlecsik <kadlec@netfilter.org>
+	2007-2013 VMware, Inc
+	2007 Oracle
+	2016-2017, Mellanox Technologies
+	1999-2000 Vojtech Pavlik
+	2012 Nokia Corporation
+	2001-2003 Sistina Software (UK) Limited
+	2004-2009, 2015 Red Hat, Inc
+	2011 secunet Security Networks AG
+	2011 Steffen Klassert
+	2016 Linus Walleij
+	2017-2020 Mickaël Salaün <mic@digikod.net>
+	2018-2020 ANSSI
+	2018 Intel Corporation
+	Bill Dirks <bill@thedirks.org>
+	Justin Schoeman
+	Hans Verkuil <hverkuil@xs4all.nl>
+	1993 Theodore Ts'o
+	1999-2002 Vojtech Pavlik
+	2015 Hans de Goede
+	2008-2009, Thomas Gleixner <tglx@linutronix.de>
+	2008-2011, Red Hat, Inc., Ingo Molnar
+	2008-2011, Red Hat, Inc., Peter Zijlstra
+	2020 William Breathitt Gray
+	2004, 2008 Red Hat, Inc
+	2021 Code Construct
+	2021 Google
+	2015 Seagate Technology PLC
+	2016 Western Digital
+	2007 Davide Libenzi <davidel@xmailserver.org>
+	2019 Jens Axboe
+	2019 Christoph Hellwig
+	2008-2011, Intel Corporation
+	2022 Casey Schaufler <casey@schaufler-ca.com>
+	2022 Intel Corporation
+	2010 OMICRON electronics GmbH
+	2007 USAGI/WIDE Project
+	2010 Herbert Xu <herbert@gondor.apana.org.au>
+	2007 Cluster File Systems, Inc
+	1995, 96, 97, 98, 99, 2003, 05 Ralf Baechle
+	2012 ARM Ltd
+	2001-2004 Silicon Graphics, Inc
+	1999-2002 Vojtech Pavlik
+	International Business Machines Corp., 2006
+License: GPL-2.0 with Linux-syscall-note exception
+
+Files:	bundled/linux/include/uapi/linux/dqblk_xfs.h
+	bundled/linux/include/uapi/linux/mqueue.h
+Copyright: 2003 Krzysztof Benedyczak & Michal Wronski
+           1995-2001,2004 Silicon Graphics, Inc
+License: LGPL-2.1+ with Linux-syscall-note exception
+
+Files: bundled/linux/include/uapi/linux/tee.h
+Copyright: 2015-2016, Linaro Limited
+License: BSD-2-Clause
+
+Files: bundled/linux/include/uapi/linux/quota.h
+Copyright: 1982, 1986 Regents of the University of California
+License: BSD-3-Clause
+
+Files: bundled/linux/include/uapi/linux/nfc.h
+Copyright: 2011 Instituto Nokia de Tecnologia
+License: ISC
+
+Files: debian/*
+Copyright:  1996-2001 Wichert Akkerman <wakkerma@wi.leidenuniv.nl>
+            2003-2007 Roland McGrath <frob@debian.org>
+            2008-2013 Frederik Schüler <fs@debian.org>
+            2014-2024 Steve McIntyre <93sam@debian.org>
+License: LGPL-2.1+
+
+License: LGPL-2.1+
+ This library is free software; you can redistribute it and/or
+ modify it under the terms of the GNU Lesser General Public
+ License as published by the Free Software Foundation; either
+ version 2.1 of the License, or (at your option) any later version.
+ .
+ This library is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ Lesser General Public License for more details.
+ .
+ You should have received a copy of the GNU Lesser General Public
+ License along with this library; if not, write to the Free Software
+ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+ .
+ On Debian systems, the complete text of the GNU Lesser General Public License
+ version 2.1 can be found in `/usr/share/common-licenses/LGPL-2.1'.
+
+License: GPL-2
+ This package is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; either version 2 of the License, or
+ (at your option) any later version.
+ .
+ This package is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program. If not, see <https://www.gnu.org/licenses/>
+ .
+ On Debian systems, the complete text of the GNU General
+ Public License version 2 can be found in "/usr/share/common-licenses/GPL-2".
+
+License: GPL-2.0 with Linux-syscall-note exception
+ NOTE! This copyright does *not* cover user programs that use kernel services
+ by normal system calls - this is merely considered normal use of the kernel,
+ and does *not* fall under the heading of "derived work". Also note that the
+ GPL below is copyrighted by the Free Software Foundation, but the instance of
+ code that it refers to (the Linux kernel) is copyrighted by me and others who
+ actually wrote it.
+ .
+ Also note that the only valid version of the GPL as far as the kernel is
+ concerned is _this_ particular version of the license (ie v2, not v2.2 or v3.x
+ or whatever), unless explicitly otherwise stated.
+ .
+ Linus Torvalds
+ .
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; version 2 of the License.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program; if not, write to the Free Software Foundation, Inc.,
+ 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA.
+ .
+ On Debian and systems the full text of the GNU General Public
+ License version 2 can be found in the file
+ "/usr/share/common-licenses/GPL-2".
+
+License: BSD-2-Clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions are met:
+ .
+ 1. Redistributions of source code must retain the above copyright notice,
+ this list of conditions and the following disclaimer.
+ .
+ 2. Redistributions in binary form must reproduce the above copyright notice,
+ this list of conditions and the following disclaimer in the documentation
+ and/or other materials provided with the distribution.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
+ THE POSSIBILITY OF SUCH DAMAGE.
+
+License: BSD-3-Clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+ 1. Redistributions of source code must retain the above copyright notice,
+    this list of conditions and the following disclaimer.
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+ 3. Neither the name of the owner nor the names of its contributors may be
+    used to endorse or promote products derived from this software without
+    specific prior written permission.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY
+ DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License: Expat
+ Permission is hereby granted, free of charge, to any person
+ obtaining a copy of this software and associated documentation files
+ (the "Software"), to deal in the Software without restriction,
+ including without limitation the rights to use, copy, modify, merge,
+ publish, distribute, sublicense, and/or sell copies of the Software,
+ and to permit persons to whom the Software is furnished to do so,
+ subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be
+ included in all copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+
+License: ISC
+ The ISC License
+ .
+ Copyright (c) 2024 by the copyright holder
+ .
+ Permission to use, copy, modify, and/or distribute this software for any
+ purpose with or without fee is hereby granted, provided that the above
+ copyright notice and this permission notice appear in all copies.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+License: LGPL-2.1+ with Linux-syscall-note exception
+ This package is free software; you can redistribute it and/or
+ modify it under the terms of the GNU Lesser General Public
+ License as published by the Free Software Foundation; either
+ version 2.1 of the License, or (at your option) any later version.
+ .
+ This package is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ Lesser General Public License for more details.
+ .
+ You should have received a copy of the GNU Lesser General Public
+ License along with this package; if not, write to the Free Software
+ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+ .
+   NOTE! This copyright does *not* cover user programs that use kernel
+ services by normal system calls - this is merely considered normal use
+ of the kernel, and does *not* fall under the heading of "derived work".
+ Also note that the GPL below is copyrighted by the Free Software
+ Foundation, but the instance of code that it refers to (the Linux
+ kernel) is copyrighted by me and others who actually wrote it.
+ .
+ Also note that the only valid version of the GPL as far as the kernel
+ is concerned is _this_ particular version of the license (ie v2, not
+ v2.2 or v3.x or whatever), unless explicitly otherwise stated.
+ .
+ Linus Torvalds
+Comment:
+ On Debian systems, the complete text of the GNU Lesser General
+ Public License can be found in `/usr/share/common-licenses/LGPL-2.1'.

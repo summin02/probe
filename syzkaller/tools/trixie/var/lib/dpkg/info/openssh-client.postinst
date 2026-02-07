@@ -1,0 +1,84 @@
+#!/bin/sh
+set -e
+
+action="$1"
+
+umask 022
+
+
+update_ssh_group_name() {
+	# The _ssh group used to be called ssh, but that could clash with
+	# locally-created user accounts.  Since this only exists as an
+	# otherwise-empty group to which ssh-agent is installed setgid, it's
+	# easy to rename.
+	if getent group ssh >/dev/null && ! getent group _ssh >/dev/null; then
+		groupmod -n _ssh ssh
+	fi
+}
+
+set_ssh_agent_permissions() {
+	if ! getent group _ssh >/dev/null; then
+		addgroup --system --quiet --force-badname _ssh
+	fi
+	if ! dpkg-statoverride --list /usr/bin/ssh-agent >/dev/null; then
+		chgrp _ssh /usr/bin/ssh-agent
+		chmod 2755 /usr/bin/ssh-agent
+	fi
+}
+
+remove_obsolete_alternatives() {
+	update-alternatives --remove rcp /usr/bin/scp
+	update-alternatives --remove rlogin /usr/bin/slogin
+	update-alternatives --remove rsh /usr/bin/ssh
+}
+
+
+if [ "$action" = configure ]; then
+	if dpkg --compare-versions "$2" lt-nl 1:8.4p1-6~; then
+		update_ssh_group_name
+	fi
+	set_ssh_agent_permissions
+	if dpkg --compare-versions "$2" lt-nl 1:9.1p1-1~; then
+		remove_obsolete_alternatives
+	fi
+
+	# debhelper compatibility level 14 may supersede this with something
+	# more complete; in the meantime, just reload systemd's state so
+	# that it at least has the current ssh-agent.* unit files.
+	if [ -z "$DPKG_ROOT" ] && [ -d /run/systemd/system ]; then
+		deb-systemd-invoke --user daemon-reload >/dev/null || true
+	fi
+fi
+
+# Automatically added by dh_installtmpfiles/13.24.2
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+	if [ -x "$(command -v systemd-tmpfiles)" ]; then
+		systemd-tmpfiles ${DPKG_ROOT:+--root="$DPKG_ROOT"} --create openssh-client.conf || true
+	fi
+fi
+# End automatically added section
+# Automatically added by dh_installsystemduser/13.24.2
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+	if [ -z "$DPKG_ROOT" ] ; then
+		# The following line should be removed in trixie or trixie+1
+		deb-systemd-helper --user unmask 'ssh-agent.socket' >/dev/null || true
+
+		# was-enabled defaults to true, so new installations run enable.
+		if deb-systemd-helper --quiet --user was-enabled 'ssh-agent.socket' ; then
+			# Enables the unit on first installation, creates new
+			# symlinks on upgrades if the unit file has changed.
+			deb-systemd-helper --user enable 'ssh-agent.socket' >/dev/null || true
+		else
+			# Update the statefile to add new symlinks (if any), which need to be
+			# cleaned up on purge. Also remove old symlinks.
+			deb-systemd-helper --user update-state 'ssh-agent.socket' >/dev/null || true
+		fi
+	fi
+fi
+# End automatically added section
+# Automatically added by dh_installdeb/13.24.2
+dpkg-maintscript-helper rm_conffile /etc/ssh/moduli 1:7.9p1-8\~ -- "$@"
+# End automatically added section
+
+
+exit 0

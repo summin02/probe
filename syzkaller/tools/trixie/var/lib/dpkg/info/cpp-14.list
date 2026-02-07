@@ -1,0 +1,10 @@
+/.
+/usr
+/usr/bin
+/usr/share
+/usr/share/doc
+/usr/share/lintian
+/usr/share/lintian/overrides
+/usr/share/lintian/overrides/cpp-14
+/usr/bin/cpp-14
+/usr/share/doc/cpp-14

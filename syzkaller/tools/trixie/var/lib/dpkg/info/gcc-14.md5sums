@@ -1,0 +1,11 @@
+7d0cead2dd191e9c7ac434dcce3320e8  usr/share/doc/gcc-14-base/NEWS.gz
+b715c0cc47d67a125257c22c7286caf3  usr/share/doc/gcc-14-base/NEWS.html
+9faf886db94815e23834c80e96178542  usr/share/doc/gcc-14-base/README.Bugs
+d126f661629f49c61de64d7252c464aa  usr/share/doc/gcc-14-base/README.ssp
+b43ec216c4d6e98c4c2e3aafea39881c  usr/share/doc/gcc-14-base/changelog.gz
+3bb9fb17c6f73bf64ba9960e10a4f484  usr/share/doc/gcc-14-base/gcc/changelog.gz
+cf671e3e37050af3abeccbe937e10329  usr/share/doc/gcc-14-base/gomp/changelog.gz
+d388002dd996cfc6f8a159a4723bf614  usr/share/doc/gcc-14-base/itm/changelog.gz
+cec31e6fe01730eddd3aaea844ce5dc8  usr/share/doc/gcc-14-base/quadmath/changelog.gz
+c3f54f9930657dae0de8006032e6d2a5  usr/share/doc/gcc-14-base/sanitizer/changelog.gz
+98fef7b6453922ee9d6409d32aabd429  usr/share/lintian/overrides/gcc-14

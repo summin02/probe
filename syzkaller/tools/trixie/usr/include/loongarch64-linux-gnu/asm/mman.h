@@ -1,0 +1,1 @@
+../../../lib/linux/uapi/loongarch/asm/mman.h

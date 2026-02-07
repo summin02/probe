@@ -1,0 +1,19 @@
+#! /bin/sh
+
+set -e
+
+case "$1" in
+  configure)
+    touch /var/lib/ucf/hashfile
+    touch /var/lib/ucf/registry
+    ;;
+  abort-upgrade) ;;
+  abort-remove) ;;
+  abort-deconfigure) ;;
+  *) echo "$0: didn't understand being called with \`$1'" 1>&2
+     exit 0;;
+esac
+
+
+
+exit 0

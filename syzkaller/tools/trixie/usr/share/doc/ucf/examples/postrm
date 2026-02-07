@@ -1,0 +1,26 @@
+#! /bin/sh
+set -e
+
+case "$1" in
+    purge)
+	# Mimic dpkg as closely as possible, so remove configuration files
+	# with dpkg backup extensions too:
+	### Some of the following is from Tore Anderson:
+	for ext in '~' '%' .bak .ucf-new .ucf-old .ucf-dist;  do
+	    rm -f /etc/foo.conf$ext
+	done
+	
+	# remove the configuration file itself
+	rm -f /etc/foo.conf
+
+	# and finally clear it out from the ucf database
+	if which ucf >/dev/null; then
+            ucf --purge /etc/foo.conf
+	fi    
+	if which ucfr >/dev/null; then
+            ucfr --purge foo /etc/foo.conf
+	fi    
+	;;
+esac
+
+exit 0

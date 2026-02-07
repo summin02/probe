@@ -1,0 +1,16 @@
+# Copyright 2023 syzkaller project authors. All rights reserved.
+# Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
+
+# See https://source.android.com/setup/build/building-kernels
+# for details on how to checkout and build Android kernel.
+
+# Following branch: android16-6.12
+kernel:
+ repo: https://android.googlesource.com/kernel/common
+ tag: 5150a2974c100f8aa5cbfa9a09d804ee4369f61e
+
+shell:
+ - make gki_defconfig
+
+config:
+ - CMDLINE: [append, "binder.impl=rust"]

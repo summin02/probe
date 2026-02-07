@@ -1,0 +1,1 @@
+../../../lib/linux/uapi/m68k/asm/bootinfo-hp300.h

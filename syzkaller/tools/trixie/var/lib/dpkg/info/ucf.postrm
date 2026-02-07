@@ -1,0 +1,41 @@
+#! /bin/sh
+
+set -e
+
+case "$1" in
+  remove) ;;
+  purge)
+      rm -f /var/lib/ucf/hashfile
+      rm -f /var/lib/ucf/hashfile.*
+      rm -f /var/lib/ucf/registry
+      rm -f /var/lib/ucf/registry.*
+      if [ -d /var/lib/ucf/cache ]; then
+          find /var/lib/ucf/cache -type f -print0 | xargs -0r /bin/rm -f
+          rmdir /var/lib/ucf/cache 1>&2 || true
+      fi
+
+    if [ -e /usr/share/debconf/confmodule ]; then
+        # Purge this package's data from the debconf database.
+        . /usr/share/debconf/confmodule
+        db_purge
+    fi
+    ;;
+  disappear) ;;
+  upgrade) ;;
+  failed-upgrade) ;;
+  abort-install) ;;
+  abort-upgrade) ;;
+  *) echo "$0: didn't understand being called with \`$1'" 1>&2
+     exit 0;;
+esac
+
+# Automatically added by dh_installdebconf/13.24.2
+if [ "$1" = purge ] && [ -e /usr/share/debconf/confmodule ]; then
+	. /usr/share/debconf/confmodule
+	db_purge
+fi
+# End automatically added section
+
+
+
+exit 0

@@ -1,0 +1,14 @@
+/.
+/etc
+/etc/logrotate.d
+/etc/logrotate.d/wtmpdb
+/usr
+/usr/lib
+/usr/lib/x86_64-linux-gnu
+/usr/lib/x86_64-linux-gnu/libwtmpdb.so.0.73.0
+/usr/share
+/usr/share/doc
+/usr/share/doc/libwtmpdb0
+/usr/share/doc/libwtmpdb0/changelog.Debian.gz
+/usr/share/doc/libwtmpdb0/copyright
+/usr/lib/x86_64-linux-gnu/libwtmpdb.so.0

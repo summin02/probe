@@ -1,0 +1,2 @@
+gcc-14-x86-64-linux-gnu binary: hardening-no-pie
+gcc-14-x86-64-linux-gnu binary: binary-without-manpage

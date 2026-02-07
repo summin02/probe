@@ -1,0 +1,28 @@
+{{/*
+Copyright 2025 syzkaller project authors. All rights reserved.
+Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
+
+List of AI jobs page.
+*/}}
+
+<!doctype html>
+<html>
+<head>
+	{{template "head" .Header}}
+	<title>syzbot</title>
+</head>
+<body>
+	{{template "header" .Header}}
+	<form action="/{{.Header.Namespace}}/ai" method="GET">
+		<label for="workflow">Workflow:</label>
+		<select name="workflow">
+			<option value="">All</option>
+			{{range $w := .Workflows}}
+			<option value="{{$w}}" {{if eq $w $.CurrentWorkflow}}selected{{end}}>{{$w}}</option>
+			{{end}}
+		</select>
+		<input type="submit" value="Filter">
+	</form>
+	{{template "ai_job_list" .Jobs}}
+</body>
+</html>

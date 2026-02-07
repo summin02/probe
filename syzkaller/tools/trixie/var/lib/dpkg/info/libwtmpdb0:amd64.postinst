@@ -1,0 +1,29 @@
+#!/bin/sh
+
+set -e
+
+lib_log="${DPKG_ROOT:-}/var/lib/wtmpdb/wtmp.db"
+new_log="${DPKG_ROOT:-}/var/log/wtmp.db"
+
+# Effect the conversion from storing the live log in the state directory to
+# storing it in its proper place, the logs directory. Also set up the symlink
+# where tmpfiles.d is not available.
+if [ "$1" = "configure" ]
+then
+  if [ -s "$lib_log" ] && [ ! -h "$lib_log" ] && [ ! -s "$new_log" ]
+  then
+    mv -f "$lib_log" "$new_log"
+  fi
+
+  # The unhandled case is records in both locations. For this we need
+  # a 'wtmpdb merge' operation called in wtmpdb.postinst but no such
+  # operation yet exists.
+
+  if [ ! -f "$lib_log" ]
+  then
+    mkdir -p "$(dirname "$lib_log")"
+    ln -sf ../../log/wtmp.db "$lib_log"
+  fi
+fi
+
+

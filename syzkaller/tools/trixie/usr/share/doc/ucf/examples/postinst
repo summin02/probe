@@ -1,0 +1,17 @@
+#! /bin/sh
+# Abort if any command returns an error value
+set -e
+
+case "$1" in
+    configure)
+	# Tell ucf that the file in /usr/share/foo is the latest
+	# maintainer version, and let it handle how to manage the real
+	# confuguration file in /etc. This is how a static configuration
+	# file can be handled:
+	ucf /usr/share/foo/configuration /etc/foo.conf
+	# Register the package foo as the owner of the file.
+	ucfr foo /etc/foo.conf
+	;;
+esac
+
+exit 0

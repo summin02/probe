@@ -1,0 +1,2 @@
+// slub.c contents.
+// This file is used in read-file test.
