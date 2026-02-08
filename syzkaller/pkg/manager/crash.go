@@ -207,7 +207,11 @@ func (cs *CrashStore) VariantStats(title string) (map[string]*VariantInfo, error
 
 // PROBE: SaveTier3Stat records a Tier 3 crash as statistics only (no logs/reports/repro).
 func (cs *CrashStore) SaveTier3Stat(title string, crashType crash.Type) error {
-	statFile := filepath.Join(cs.BaseDir, "crashes", "tier3-stat.json")
+	crashDir := filepath.Join(cs.BaseDir, "crashes")
+	if err := osutil.MkdirAll(crashDir); err != nil {
+		return err
+	}
+	statFile := filepath.Join(crashDir, "tier3-stat.json")
 
 	stats := make(map[string]*Tier3Entry)
 	if data, err := os.ReadFile(statFile); err == nil {
@@ -480,6 +484,9 @@ func (cs *CrashStore) BugList() ([]*BugInfo, error) {
 	var lastErr error
 	errCount := 0
 	for _, dir := range dirs {
+		if dir == "tier3-stat.json" {
+			continue
+		}
 		info, err := cs.BugInfo(dir, false)
 		if err != nil {
 			errCount++
