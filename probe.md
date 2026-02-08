@@ -212,32 +212,31 @@ Output per call: ~750 tokens (analysis + score + strategy)
 - New module in `pkg/` or `syz-manager/` for LLM integration
 - Focus Mode job to accept external mutation hints
 
-## Phase 4: UAF/OOB Mutation Engine
+## Phase 4: Practical Hardening — **DONE**
 
-**Goal**: Add mutation strategies specifically designed to trigger UAF and OOB.
+**Goal**: Practical improvements to boost UAF/OOB crash discovery before Phase 5.
 
-**Modification targets**:
-- `prog/mutation.go` — new mutation types + weight adjustments
-- `prog/rand.go` — boundary value generation
-- `sys/linux/*.txt` — enhanced syscall descriptions
+**Modified files**: `setup/probe.cfg`, `pkg/manager/crash.go`, `pkg/fuzzer/fuzzer.go`, `prog/mutation.go`, `prog/size.go`, `prog/hints.go`
 
-### 4a. UAF-Targeted Mutations
-- **Resource lifecycle mutation**: insert free → reuse sequences
-  - `open/socket/mmap` → use → `close/munmap` → reuse same fd/ptr
-- **Timing mutation**: vary number of calls between free and reuse
-- New weight in `MutateOpts`: `UAFPatternWeight`
+### 4a. kasan_multi_shot + Severity Escalation — **DONE**
+- Removed `oops=panic` and added `kasan_multi_shot` to kernel cmdline
+- Added `escalateCrashType()`: scans all reports (primary + tail) for the most severe crash type when multiple KASAN reports exist in one execution
+- Called from `SaveCrash()` before tier classification
 
-### 4b. OOB-Targeted Mutations
-- **Boundary value injection**: prioritize 0, -1, PAGE_SIZE-1, PAGE_SIZE+1, INT_MAX for size/offset args
-- **LenType priority boost**: raise from 1.0 (current) to higher — length fields are key OOB triggers
-- **Buffer size mismatch**: deliberately create inconsistency between declared and actual buffer sizes
-- Add OOB-specific values to `specialInts` in `prog/rand.go`
+### 4b. Fault Injection × Focus Mode — **DONE**
+- When Focus Mode starts for a high-severity crash, also spawns `faultInjectionJob` for each call in the crash program
+- Error paths (incomplete cleanup) are a major source of UAFs
+- Reuses existing `statExecFaultInject` counter, jobs go through `focusQueue`
 
-### 4c. Enhanced Syscall Descriptions
-Focus on interfaces with complex memory management:
-- `sys/linux/uffd.txt` (currently 95 lines) — expand with fault-timing patterns
-- `sys/linux/io_uring.txt` — add deeper op-specific lifecycle descriptions
-- netfilter/nftables object chaining patterns
+### 4c. Hints OOB Boundary Extension — **DONE**
+- Extended `checkConstArg()` in `prog/hints.go` to generate boundary±1/±2 variants after standard replacers
+- Standard hints generate values that PASS comparisons; OOB variants generate values that FAIL boundary checks (off-by-one/off-by-two)
+- Applies `uselessHint` filter to avoid invalid boundary values
+
+### 4d. LenType Priority Boost + OOB-Aware Mutation — **DONE**
+- Boosted `LenType` mutation priority from `0.1 * maxPriority` (6.4) to `0.4 * maxPriority` (25.6)
+- Added OOB-specific strategy to `mutateSize()` (20% chance): off-by-one above/below, double size, zero size, page-size overshoot
+- Strategy uses actual buffer size (from `assignSizesCall`) as reference, `preserve=true` prevents recalculation
 
 ## Phase 5: eBPF Runtime Monitor
 
@@ -284,7 +283,7 @@ eBPF detects:
 | 1 | Crash Filtering & Dedup Pipeline | Low | Immediate noise reduction + variant preservation | None | **DONE** |
 | 2 | Focus Mode | Medium | Deep exploitation of high-severity findings | Phase 1 (needs severity tiers) | **DONE** |
 | 3 | AI Triage (Claude Haiku 4.5) | Medium | Smart group-level crash analysis | Phase 1 (needs dedup groups), Phase 2 (needs Focus Mode) |
-| 4 | UAF/OOB Mutation Engine | Medium-High | Higher vuln discovery rate | None (can parallel with 2-3) |
+| 4 | Practical Hardening (UAF/OOB) | Medium | Higher vuln discovery rate | None (can parallel with 2-3) | **DONE** |
 | 5 | eBPF Runtime Monitor | High | Real-time exploitability feedback | Phase 2 (needs Focus Mode feedback loop) |
 
 **Critical path**: Phase 1 → Phase 2 → Phase 3 (sequential dependency)

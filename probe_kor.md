@@ -211,32 +211,31 @@
 - `pkg/` 또는 `syz-manager/`에 LLM 통합 모듈 신규 생성
 - 포커스 모드 job이 외부 뮤테이션 힌트를 수용하도록 수정
 
-## Phase 4: UAF/OOB 뮤테이션 엔진
+## Phase 4: Practical Hardening — **완료**
 
-**목표**: UAF와 OOB를 유발하도록 특화된 뮤테이션 전략 추가.
+**목표**: Phase 5 전 UAF/OOB 크래시 발견율을 높이기 위한 실용적 개선.
 
-**수정 대상**:
-- `prog/mutation.go` — 새 뮤테이션 타입 + 가중치 조정
-- `prog/rand.go` — 경계값 생성
-- `sys/linux/*.txt` — 강화된 syscall 기술
+**수정 파일**: `setup/probe.cfg`, `pkg/manager/crash.go`, `pkg/fuzzer/fuzzer.go`, `prog/mutation.go`, `prog/size.go`, `prog/hints.go`
 
-### 4a. UAF 타겟 뮤테이션
-- **리소스 생명주기 뮤테이션**: free → reuse 시퀀스 삽입
-  - `open/socket/mmap` → 사용 → `close/munmap` → 같은 fd/ptr 재사용
-- **타이밍 뮤테이션**: free와 reuse 사이의 호출 수 변형
-- `MutateOpts`에 새 가중치: `UAFPatternWeight`
+### 4a. kasan_multi_shot + 심각도 에스컬레이션 — **완료**
+- 커널 cmdline에서 `oops=panic` 제거, `kasan_multi_shot` 추가
+- `escalateCrashType()` 추가: 한 실행에서 여러 KASAN 리포트가 존재할 때 전체 리포트(primary + tail)를 스캔하여 가장 심각한 타입으로 에스컬레이션
+- `SaveCrash()`에서 tier 분류 전에 호출
 
-### 4b. OOB 타겟 뮤테이션
-- **경계값 주입**: 크기/오프셋 인자에 0, -1, PAGE_SIZE-1, PAGE_SIZE+1, INT_MAX 우선 적용
-- **LenType 우선순위 상향**: 현재 1.0에서 상향 — 길이 필드는 핵심 OOB 트리거
-- **버퍼 크기 불일치**: 선언된 크기와 실제 버퍼 크기 간 의도적 불일치 생성
-- `prog/rand.go`의 `specialInts`에 OOB 특화 값 추가
+### 4b. Fault Injection × Focus Mode — **완료**
+- 고위험 크래시로 Focus Mode가 시작될 때 크래시 프로그램의 각 call에 대해 `faultInjectionJob`도 함께 스폰
+- 에러 경로(불완전한 cleanup)가 UAF의 주요 원인
+- 기존 `statExecFaultInject` 카운터 재사용, `focusQueue`를 통해 실행
 
-### 4c. 강화된 시즈콜 기술
-복잡한 메모리 관리가 있는 인터페이스에 집중:
-- `sys/linux/uffd.txt` (현재 95줄) — fault-timing 패턴으로 확장
-- `sys/linux/io_uring.txt` — op별 생명주기 기술 심화
-- netfilter/nftables 오브젝트 체이닝 패턴
+### 4c. Hints OOB 경계 확장 — **완료**
+- `prog/hints.go`의 `checkConstArg()`를 확장하여 표준 replacer 뒤에 boundary±1/±2 변형 생성
+- 표준 hints는 비교를 통과하는 값을 생성; OOB 변형은 경계 검사를 실패하는 값 생성 (off-by-one/off-by-two)
+- `uselessHint` 필터를 적용하여 잘못된 boundary 값 방지
+
+### 4d. LenType 우선순위 상향 + OOB 인식 뮤테이션 — **완료**
+- `LenType` 뮤테이션 우선순위를 `0.1 * maxPriority` (6.4)에서 `0.4 * maxPriority` (25.6)로 상향
+- `mutateSize()`에 OOB 특화 전략 추가 (20% 확률): off-by-one 상/하, 2배 크기, 0 크기, 페이지 크기 오버슈트
+- 실제 버퍼 크기(`assignSizesCall`에서 계산)를 기준으로 사용, `preserve=true`로 재계산 방지
 
 ## Phase 5: eBPF 런타임 모니터
 
@@ -283,7 +282,7 @@ eBPF 감지:
 | 1 | 크래시 필터링 & 중복 제거 파이프라인 | 낮음 | 즉각적 노이즈 감소 + 변종 다양성 보존 | 없음 | **완료** |
 | 2 | 포커스 모드 | 중간 | 고위험 발견 사항 심화 탐색 | Phase 1 (심각도 등급 필요) | **완료** |
 | 3 | AI 트리아지 (Claude Haiku 4.5) | 중간 | 스마트 그룹 단위 크래시 분석 | Phase 1 (중복 제거 그룹 필요), Phase 2 (포커스 모드 필요) |
-| 4 | UAF/OOB 뮤테이션 엔진 | 중간~높음 | 취약점 발견율 향상 | 없음 (2-3과 병렬 가능) |
+| 4 | Practical Hardening (UAF/OOB) | 중간 | 취약점 발견율 향상 | 없음 (2-3과 병렬 가능) | **완료** |
 | 5 | eBPF 런타임 모니터 | 높음 | 실시간 익스플로잇 가능성 피드백 | Phase 2 (포커스 모드 피드백 루프 필요) |
 
 **크리티컬 패스**: Phase 1 → Phase 2 → Phase 3 (순차 의존성)

@@ -749,7 +749,9 @@ func (t *LenType) getMutationPrio(target *Target, arg Arg,
 	if ignoreLengths {
 		return dontMutate, false
 	}
-	return 0.1 * maxPriority, false
+	// PROBE: Boost LenType mutation priority for OOB detection.
+	// Size/length fields are key OOB triggers — higher priority = more mutations.
+	return 0.4 * maxPriority, false
 }
 
 func (t *BufferType) getMutationPrio(target *Target, arg Arg,

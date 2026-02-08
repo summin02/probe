@@ -213,6 +213,27 @@ func (r *randGen) mutateSize(arg *ConstArg, parent []Arg, fields []Field) bool {
 			}
 		}
 	}
+	// PROBE: OOB-specific mutation — use actual buffer size as reference.
+	// arg.Val here is the correct size (calculated by assignSizesCall before mutation).
+	// Try values relative to the current (correct) size for off-by-one OOB.
+	if r.oneOf(5) { // 20% chance
+		currentSize := arg.Val
+		if currentSize > 0 {
+			switch r.Intn(5) {
+			case 0:
+				arg.Val = currentSize + 1 // off-by-one above
+			case 1:
+				arg.Val = currentSize - 1 // off-by-one below
+			case 2:
+				arg.Val = currentSize * 2 // double size
+			case 3:
+				arg.Val = 0 // zero size
+			case 4:
+				arg.Val = currentSize + 4096 // page-size overshoot
+			}
+			return true
+		}
+	}
 	if r.oneOf(100) {
 		arg.Val = r.rand64()
 		return true

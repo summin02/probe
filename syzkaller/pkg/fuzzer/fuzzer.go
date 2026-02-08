@@ -423,6 +423,19 @@ func (fuzzer *Fuzzer) AddFocusCandidate(p *prog.Prog, title string, tier int) bo
 			Calls: calls,
 		},
 	})
+
+	// PROBE: Also run fault injection on crash program's calls.
+	// Error paths are a major source of UAFs (incomplete cleanup).
+	if fuzzer.Config.FaultInjection {
+		for i := range p.Calls {
+			fuzzer.startJob(fuzzer.statJobsFaultInjection, &faultInjectionJob{
+				exec: fuzzer.focusQueue,
+				p:    p.Clone(),
+				call: i,
+			})
+		}
+		fuzzer.Logf(0, "PROBE: fault injection queued for '%v' (%d calls)", title, len(p.Calls))
+	}
 	return true
 }
 

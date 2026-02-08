@@ -51,8 +51,37 @@ func ReadCrashStore(workdir string) *CrashStore {
 	}
 }
 
+// PROBE: escalateCrashType scans all reports (primary + tail) for the most severe crash type.
+// When kasan_multi_shot is enabled, multiple KASAN reports may exist in one execution.
+// Returns the highest-severity (lowest tier number) type found.
+func escalateCrashType(primary *report.Report, tailReports []*report.Report) crash.Type {
+	bestType := primary.Type
+	bestTier := bestType.Tier()
+	for _, rep := range tailReports {
+		if rep.Type == crash.UnknownType {
+			continue
+		}
+		tier := rep.Type.Tier()
+		if tier < bestTier {
+			bestType = rep.Type
+			bestTier = tier
+		}
+	}
+	return bestType
+}
+
 // Returns whether it was the first crash of a kind.
 func (cs *CrashStore) SaveCrash(crash *Crash) (bool, error) {
+	// PROBE: Escalate crash type if multiple KASAN reports exist (kasan_multi_shot).
+	if len(crash.TailReports) > 0 {
+		escalated := escalateCrashType(crash.Report, crash.TailReports)
+		if escalated != crash.Report.Type {
+			log.Logf(0, "PROBE: crash type escalated from %v to %v for '%v'",
+				crash.Report.Type, escalated, crash.Title)
+			crash.Report.Type = escalated
+		}
+	}
+
 	dir := cs.path(crash.Title)
 	osutil.MkdirAll(dir)
 

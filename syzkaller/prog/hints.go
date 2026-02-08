@@ -186,8 +186,10 @@ func checkConstArg(arg *ConstArg, field *Field, compMap CompMap, exec func() boo
 	original := arg.Val
 	// Note: because shrinkExpand returns a map, order of programs is non-deterministic.
 	// This can affect test coverage reports.
+	bitSize := arg.Type().TypeBitSize()
+	replacers := shrinkExpand(original, compMap, bitSize, false)
 replacerLoop:
-	for _, replacer := range shrinkExpand(original, compMap, arg.Type().TypeBitSize(), false) {
+	for _, replacer := range replacers {
 		if field != nil && len(field.relatedFields) != 0 {
 			for related := range field.relatedFields {
 				if related.(uselessHinter).uselessHint(replacer) {
@@ -199,7 +201,47 @@ replacerLoop:
 		}
 		arg.Val = replacer
 		if !exec() {
-			break
+			arg.Val = original
+			return
+		}
+	}
+
+	// PROBE: OOB boundary variants — try values just past comparison boundaries.
+	// For each standard replacer (which passes a check), generate ±1/±2 variants
+	// that deliberately FAIL boundary checks to trigger off-by-one/off-by-two OOB.
+	seen := make(map[uint64]bool)
+	for _, r := range replacers {
+		seen[r] = true
+	}
+	for _, replacer := range replacers {
+		for _, delta := range []uint64{1, 2} {
+			for _, boundary := range []uint64{replacer + delta, replacer - delta} {
+				boundary = truncateToBitSize(boundary, bitSize)
+				if boundary == original || seen[boundary] {
+					continue
+				}
+				// Apply the same uselessHint filter as standard replacers.
+				if field != nil && len(field.relatedFields) != 0 {
+					skip := false
+					for related := range field.relatedFields {
+						if related.(uselessHinter).uselessHint(boundary) {
+							skip = true
+							break
+						}
+					}
+					if skip {
+						continue
+					}
+				} else if arg.Type().(uselessHinter).uselessHint(boundary) {
+					continue
+				}
+				seen[boundary] = true
+				arg.Val = boundary
+				if !exec() {
+					arg.Val = original
+					return
+				}
+			}
 		}
 	}
 	arg.Val = original
