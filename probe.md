@@ -310,6 +310,7 @@ Host (syz-manager)              Guest VM
 - Runs loader via shell command chain before executor starts
 - bpffs mount added to VM fstab (`tools/trixie/etc/fstab`)
 - Graceful degradation: if eBPF fails, executor returns zero metrics, fuzzing continues
+- **Bugfix**: All eBPF command output redirected to `/dev/null` to prevent crash reporter interference; `exec` used to replace shell with executor for clean process tree
 
 ### 5f. Fuzzer Feedback — **DONE**
 - `processResult()`: tracks `statEbpfReuses` and `statEbpfUafDetected` stats

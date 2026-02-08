@@ -309,6 +309,7 @@
 - Executor 시작 전 셸 명령 체인으로 로더 실행
 - VM fstab에 bpffs 마운트 추가 (`tools/trixie/etc/fstab`)
 - 그레이스풀 디그레이데이션: eBPF 실패 시 executor는 0 메트릭 반환, 퍼징 계속
+- **버그 수정**: 모든 eBPF 명령 출력을 `/dev/null`로 리다이렉트하여 crash reporter 간섭 방지; `exec`으로 shell을 executor로 교체하여 깔끔한 프로세스 트리 확보
 
 ### 5f. 퍼저 피드백 — **완료**
 - `processResult()`: `statEbpfReuses`와 `statEbpfUafDetected` 통계 추적
