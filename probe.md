@@ -69,8 +69,8 @@
 - Add filtering layer in manager: only prioritize crashes with high impact scores
 - Crash severity tiers:
   - **Tier 1 (Critical)**: KASANInvalidFree, KASANUseAfterFreeWrite, KASANWrite, KASANUseAfterFreeRead, KASANRead
-  - **Tier 2 (Important)**: OOB variants, KFENCEInvalidFree, NullPtrDerefBUG
-  - **Tier 3 (Low)**: WARNING, LOCKDEP, MemoryLeak, Hang, KCSAN
+  - **Tier 2 (Important)**: OOB variants, KFENCEInvalidFree, NullPtrDerefBUG, Warning, Bug, UBSAN, LockdepBug, AtomicSleep, UnexpectedReboot; also the default for any unclassified crash type
+  - **Tier 3 (Stats-only)**: LostConnection, SyzFailure, Hang, DoS, MemoryLeak (explicit list only)
 - Tier 3 handling: **statistics only** (no logs, no reports, no repro)
   - Record title + count in `tier3-stat.json` (e.g., "WARNING in xxx: 47 times")
   - No disk-heavy storage — only counters
@@ -112,6 +112,8 @@ Crashes (thousands/day)
 
 **Why grouping matters**: Same crash point ≠ same exploitability. A write-UAF and read-UAF at the same location have vastly different exploit potential. Deleting "duplicates" loses attack vectors that Focus Mode needs.
 
+**VariantPrograms cap**: Loading variant programs is capped at `MaxVariants` (100) to prevent excessive disk I/O when a crash group accumulates thousands of variants.
+
 ## Phase 2: Focus Mode [DONE]
 
 **Goal**: When a high-severity crash is found, switch to intensive exploitation of that finding.
@@ -138,6 +140,8 @@ Normal Mode (exploration)
                 |
                 +-- 3. Concurrency limits
                       +-- Max 1 concurrent focus job
+                      +-- Pending queue: up to 8 candidates queued while focus active
+                      +-- On completion, next pending candidate auto-launches
                       +-- Same crash title never re-focused
                       +-- Alternate(2): 1 focus request per 2 queue polls
 ```
@@ -201,7 +205,8 @@ Provider auto-detected from model name (`claude-*` → Anthropic, otherwise → 
 **Dashboard**:
 - `main.html`: AI Score column on crash table (color-coded: red 70+, yellow 40-69, green 0-39)
 - `crash.html`: AI Exploitability Analysis section (score, class, vuln type)
-- `ai.html`: `/ai` page — status, cost tracking (USD+KRW), crash analysis table, strategy details, API call history, manual trigger buttons
+- `ai.html`: `/ai` page — status, cost tracking (USD+KRW), crash analysis table, strategy details, API call history, manual trigger buttons; auto-refreshes when LLM batch completes
+- `aianalytics.html`: `/ai/analytics` page — comprehensive analytics with Google Charts (daily cost bar, cost breakdown pie, cumulative cost line, score distribution, exploit class pie, API calls per day), data tables for token efficiency, vulnerability types, strategy runs
 - `common.html`: AI tab in navigation bar
 
 **Manager integration** (`syz-manager/ai_triage.go`):
@@ -211,6 +216,11 @@ Provider auto-detected from model name (`claude-*` → Anthropic, otherwise → 
 - Manual triggers: POST `/api/ai/analyze`, POST `/api/ai/strategize`
 
 **Graceful degradation**: No `ai_triage` config → triager nil, AI disabled, `/ai` shows "disabled", fuzzing unchanged.
+
+**Operational improvements**:
+- **Step A re-analysis**: Crashes are re-analyzed when variant count triples since last analysis (e.g., 5→15 variants), capturing evolving exploit potential as new trigger paths are discovered
+- **Cost recovery dedup**: Timestamp-based guard prevents double-counting when recovering cost history from triage result files at startup
+- **Auto-refresh**: `/ai` page automatically reloads when LLM batch completes (tracks running→complete transition)
 
 ### Cost Estimate (24h, ~126K input + ~58K output tokens)
 
@@ -323,6 +333,7 @@ Host (syz-manager)              Guest VM
 - **Bugfix (v2)**: Root cause was VM image missing bpffs mountpoint + loader hang potential. Fixed: `mkdir -p /sys/fs/bpf` before mount, `timeout 10` on loader to prevent hang blocking executor, loader output saved to `/tmp/probe-ebpf.log` for debugging. VM image fstab updated with bpffs entry. BPF header `accounted` field removed for kernel 6.1.20 compatibility.
 - **Bugfix (v3)**: `ebpf_init()` was called too early in `executor.cc` (before shmem fd operations), so `BPF_OBJ_GET` would steal fd 5/6 (`kMaxSignalFd`/`kCoverFilterFd`) when the runner didn't provide coverage filter. The `fcntl()` check then misidentified the BPF map fd as a shmem fd, causing `mmap` to fail on all VMs. Fixed: moved `ebpf_init()` to after all shmem fd operations (`mmap_input`, `mmap_output`, CoverFilter setup) in executor.cc exec mode. Also cleaned up diagnostic code: removed `/tmp/shmem-diag.txt` file writing from `shmem.h`, removed tier3 raw output logging from `manager.go`. Kept improved error message in `shmem.h` (with errno, fd, size info).
 - **Bugfix (v4)**: eBPF metrics were always 0 on the Go (manager) side despite BPF programs collecting data. Root cause: `close_fds()` in `common_linux.h` calls `close_range(3, MAX_FDS, 0)` which closes ALL fds >= 3 including the BPF map fd. The eBPF read in `finish_output()` happened AFTER `close_fds()` in a different process (runner), so `BPF_MAP_LOOKUP_ELEM` failed on the already-closed fd. Fixed: (1) exec child reads eBPF metrics BEFORE `close_fds()` and writes them to `OutputData` shared memory via atomic fields, (2) runner's `finish_output()` reads from shared memory instead of calling `ebpf_read_and_reset()` directly, (3) added `ebpf_init()` retry in `execute_one()` for late BPF deployment, (4) added `access()` check in `ebpf_init()` before `BPF_OBJ_GET`. Verified: alloc/free counts non-zero from first execution.
+- **Bugfix (v5)**: eBPF UAF score saturated to 100 for ALL programs over time (~5000+ executions). Root cause: `freed_objects` LRU map was never cleared between program executions, so freed pointers from program N appeared as "reuse" in program N+1, causing unbounded accumulation. Fixed: `ebpf_read_and_reset()` now iterates `freed_objects` map with `BPF_MAP_GET_NEXT_KEY` + `BPF_MAP_DELETE_ELEM` loop (up to 512 entries per reset) to clear stale entries. Opened pinned freed_objects map via `ebpf_open_pinned()` helper alongside metrics map.
 
 ### 5f. Fuzzer Feedback — **DONE**
 - `processResult()`: tracks `statEbpfAllocs`, `statEbpfReuses` and `statEbpfUafDetected` stats

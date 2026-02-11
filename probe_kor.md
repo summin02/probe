@@ -68,8 +68,8 @@
 - manager에 필터링 레이어 추가: impact score가 높은 크래시만 우선 처리
 - 크래시 심각도 등급:
   - **Tier 1 (치명적)**: KASANInvalidFree, KASANUseAfterFreeWrite, KASANWrite, KASANUseAfterFreeRead, KASANRead
-  - **Tier 2 (중요)**: OOB 변형, KFENCEInvalidFree, NullPtrDerefBUG
-  - **Tier 3 (낮음)**: WARNING, LOCKDEP, MemoryLeak, Hang, KCSAN
+  - **Tier 2 (중요)**: OOB 변형, KFENCEInvalidFree, NullPtrDerefBUG, Warning, Bug, UBSAN, LockdepBug, AtomicSleep, UnexpectedReboot; 미분류 크래시 유형의 기본값
+  - **Tier 3 (통계만)**: LostConnection, SyzFailure, Hang, DoS, MemoryLeak (명시적 목록만)
 - Tier 3 처리: **통계만 기록** (로그 없음, 리포트 없음, repro 없음)
   - `tier3-stat.json`에 타이틀 + 카운트만 기록 (예: "WARNING in xxx: 47회")
   - 디스크 부담 없음 — 카운터만 유지
@@ -111,6 +111,8 @@
 
 **그룹핑이 중요한 이유**: 같은 크래시 지점 ≠ 같은 익스플로잇 가능성. 같은 위치의 write-UAF와 read-UAF는 익스플로잇 잠재력이 완전히 다름. "중복"을 삭제하면 포커스 모드에 필요한 공격 벡터를 잃게 됨.
 
+**VariantPrograms 제한**: 변종 프로그램 로딩은 `MaxVariants` (100개)로 제한하여 크래시 그룹에 수천 개 변종이 쌓였을 때 과도한 디스크 I/O 방지.
+
 ## Phase 2: 포커스 모드 [완료]
 
 **목표**: 고위험 크래시 발견 시 해당 발견을 집중적으로 파고드는 모드로 전환.
@@ -137,6 +139,8 @@
                 |
                 +-- 3. 동시성 제한
                       +-- 동시 실행 최대 1개 focus job
+                      +-- 대기 큐: focus 실행 중 최대 8개 후보 대기
+                      +-- 완료 시 다음 대기 후보 자동 시작
                       +-- 같은 크래시 타이틀 재포커스 불가
                       +-- Alternate(2): 큐 폴링 2회당 focus 1회
 ```
@@ -200,7 +204,8 @@
 **대시보드**:
 - `main.html`: 크래시 테이블에 AI Score 컬럼 (색상 코딩: 빨강 70+, 노랑 40-69, 초록 0-39)
 - `crash.html`: AI 익스플로잇 분석 섹션 (점수, 클래스, 취약점 유형)
-- `ai.html`: `/ai` 페이지 — 상태, 비용 추적 (USD+KRW), 크래시 분석 테이블, 전략 상세, API 호출 히스토리, 수동 트리거 버튼
+- `ai.html`: `/ai` 페이지 — 상태, 비용 추적 (USD+KRW), 크래시 분석 테이블, 전략 상세, API 호출 히스토리, 수동 트리거 버튼; LLM 배치 완료 시 자동 새로고침
+- `aianalytics.html`: `/ai/analytics` 페이지 — Google Charts 종합 분석 (일별 비용 bar, 비용 비율 pie, 누적 비용 line, 점수 분포, exploit class pie, 일별 호출 수), 토큰 효율, 취약점 유형, 전략 실행, API 에러 데이터 테이블
 - `common.html`: 네비게이션 바에 AI 탭 추가
 
 **매니저 통합** (`syz-manager/ai_triage.go`):
@@ -210,6 +215,11 @@
 - 수동 트리거: POST `/api/ai/analyze`, POST `/api/ai/strategize`
 
 **Graceful Degradation**: `ai_triage` 설정 없음 → triager nil, AI 비활성, `/ai`에 "disabled" 표시, 퍼징 정상.
+
+**운영 개선사항**:
+- **Step A 재분석**: 변종 수가 이전 분석 대비 3배가 되면 크래시를 재분석 (예: 5→15 변종), 새로운 트리거 경로 발견에 따른 진화하는 익스플로잇 가능성 반영
+- **비용 복구 중복 방지**: 시작 시 triage 결과 파일에서 비용 히스토리 복구할 때 타임스탬프 기반 가드로 이중 카운팅 방지
+- **자동 새로고침**: `/ai` 페이지가 LLM 배치 완료 시 자동 새로고침 (running→complete 전환 추적)
 
 ### 비용 추정 (24시간, ~126K input + ~58K output 토큰)
 
@@ -322,6 +332,7 @@
 - **버그 수정 (v2)**: 근본 원인은 VM 이미지에 bpffs 마운트포인트 부재 + 로더 행(hang) 가능성. 수정: mount 전 `mkdir -p /sys/fs/bpf`, 로더에 `timeout 10`으로 행 방지, 로더 출력을 `/tmp/probe-ebpf.log`에 저장하여 디버깅 가능. VM 이미지 fstab에 bpffs 항목 추가. BPF 헤더에서 커널 6.1.20 호환성을 위해 `accounted` 필드 제거.
 - **버그 수정 (v3)**: `executor.cc`에서 `ebpf_init()`이 shmem fd 연산보다 먼저 호출되어, runner가 coverage filter를 제공하지 않을 때 `BPF_OBJ_GET`이 fd 5/6 (`kMaxSignalFd`/`kCoverFilterFd`)을 가로챔. `fcntl()` 검사가 BPF map fd를 shmem fd로 오인하여 모든 VM에서 `mmap` 실패 유발. 수정: executor.cc exec 모드에서 `ebpf_init()` 호출을 모든 shmem fd 연산(`mmap_input`, `mmap_output`, CoverFilter 설정) 이후로 이동. 진단 코드 정리: `shmem.h`에서 `/tmp/shmem-diag.txt` 파일 쓰기 제거, `manager.go`에서 tier3 원시 출력 로깅 제거. `shmem.h`의 개선된 에러 메시지(errno, fd, size 정보 포함)는 유지.
 - **버그 수정 (v4)**: Go(manager) 측에서 eBPF 메트릭이 항상 0으로 표시. BPF 프로그램은 데이터를 수집하고 있었음. 근본 원인: `common_linux.h`의 `close_fds()`가 `close_range(3, MAX_FDS, 0)`을 호출하여 BPF map fd를 포함한 fd >= 3 전부 닫음. `finish_output()`의 eBPF 읽기가 다른 프로세스(runner)에서 `close_fds()` 이후에 실행되어 이미 닫힌 fd에 대해 `BPF_MAP_LOOKUP_ELEM`이 실패. 수정: (1) exec 자식 프로세스가 `close_fds()` 전에 eBPF 메트릭을 읽어 `OutputData` 공유 메모리의 atomic 필드에 기록, (2) runner의 `finish_output()`이 `ebpf_read_and_reset()` 직접 호출 대신 공유 메모리에서 읽기, (3) 늦은 BPF 배포를 위해 `execute_one()`에 `ebpf_init()` 재시도 추가, (4) `ebpf_init()`에서 `BPF_OBJ_GET` 전 `access()` 검사 추가. 검증 완료: 첫 실행부터 alloc/free 카운트 비-0 확인.
+- **버그 수정 (v5)**: eBPF UAF 점수가 시간이 지나면 모든 프로그램에서 100으로 포화 (~5000회 이상 실행 후). 근본 원인: `freed_objects` LRU 맵이 프로그램 실행 간에 초기화되지 않아, 프로그램 N에서 해제된 포인터가 프로그램 N+1에서 "재사용"으로 감지되어 무한 축적. 수정: `ebpf_read_and_reset()`에서 `BPF_MAP_GET_NEXT_KEY` + `BPF_MAP_DELETE_ELEM` 루프 (리셋당 최대 512 엔트리)로 `freed_objects` 맵을 클리어. `ebpf_open_pinned()` 헬퍼로 metrics 맵과 함께 고정된 freed_objects 맵도 열기.
 
 ### 5f. 퍼저 피드백 — **완료**
 - `processResult()`: `statEbpfAllocs`, `statEbpfReuses`, `statEbpfUafDetected` 통계 추적
