@@ -300,9 +300,9 @@ Host (syz-manager)              Guest VM
 - Backward compatible: default 0 for old executors
 
 ### 5d. Executor C++ Integration — **DONE**
-- `executor_linux.h`: `ebpf_init()` opens pinned metrics map via raw `bpf()` syscall
+- `executor_linux.h`: `ebpf_init()` opens pinned metrics map via raw `bpf()` syscall; `access()` check before `BPF_OBJ_GET` to silently skip when map not yet pinned
 - `ebpf_read_and_reset()`: reads metrics + zeros for next execution (atomic)
-- `executor.cc`: init on startup, clear before execution, read+score in `finish_output()`
+- `executor.cc`: init on startup (with retry in `execute_one()` for late BPF deployment), clear before execution, child writes metrics to `OutputData` shared memory BEFORE `close_fds()`, runner reads from shared memory in `finish_output()`
 - UAF score formula: rapid_reuse > 0 (+50), min_delay < 10us (+30), reuse > 5 (+20) = 0-100
 
 ### 5e. Manager Deployment — **DONE**
@@ -313,9 +313,10 @@ Host (syz-manager)              Guest VM
 - **Bugfix (v1)**: All eBPF command output redirected to `/dev/null` to prevent crash reporter interference
 - **Bugfix (v2)**: Root cause was VM image missing bpffs mountpoint + loader hang potential. Fixed: `mkdir -p /sys/fs/bpf` before mount, `timeout 10` on loader to prevent hang blocking executor, loader output saved to `/tmp/probe-ebpf.log` for debugging. VM image fstab updated with bpffs entry. BPF header `accounted` field removed for kernel 6.1.20 compatibility.
 - **Bugfix (v3)**: `ebpf_init()` was called too early in `executor.cc` (before shmem fd operations), so `BPF_OBJ_GET` would steal fd 5/6 (`kMaxSignalFd`/`kCoverFilterFd`) when the runner didn't provide coverage filter. The `fcntl()` check then misidentified the BPF map fd as a shmem fd, causing `mmap` to fail on all VMs. Fixed: moved `ebpf_init()` to after all shmem fd operations (`mmap_input`, `mmap_output`, CoverFilter setup) in executor.cc exec mode. Also cleaned up diagnostic code: removed `/tmp/shmem-diag.txt` file writing from `shmem.h`, removed tier3 raw output logging from `manager.go`. Kept improved error message in `shmem.h` (with errno, fd, size info).
+- **Bugfix (v4)**: eBPF metrics were always 0 on the Go (manager) side despite BPF programs collecting data. Root cause: `close_fds()` in `common_linux.h` calls `close_range(3, MAX_FDS, 0)` which closes ALL fds >= 3 including the BPF map fd. The eBPF read in `finish_output()` happened AFTER `close_fds()` in a different process (runner), so `BPF_MAP_LOOKUP_ELEM` failed on the already-closed fd. Fixed: (1) exec child reads eBPF metrics BEFORE `close_fds()` and writes them to `OutputData` shared memory via atomic fields, (2) runner's `finish_output()` reads from shared memory instead of calling `ebpf_read_and_reset()` directly, (3) added `ebpf_init()` retry in `execute_one()` for late BPF deployment, (4) added `access()` check in `ebpf_init()` before `BPF_OBJ_GET`. Verified: alloc/free counts non-zero from first execution.
 
 ### 5f. Fuzzer Feedback — **DONE**
-- `processResult()`: tracks `statEbpfReuses` and `statEbpfUafDetected` stats
+- `processResult()`: tracks `statEbpfAllocs`, `statEbpfReuses` and `statEbpfUafDetected` stats
 - Non-crashing UAF detection: UAF score ≥ 70 triggers `AddFocusCandidate()` → Focus Mode
 - Stats visible in web dashboard: `ebpf reuses` (rate), `ebpf uaf` (count)
 

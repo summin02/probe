@@ -299,9 +299,9 @@
 - 하위 호환: 구버전 executor에서는 기본값 0
 
 ### 5d. Executor C++ 통합 — **완료**
-- `executor_linux.h`: `ebpf_init()`으로 고정된 메트릭 맵을 raw `bpf()` syscall로 열기
+- `executor_linux.h`: `ebpf_init()`으로 고정된 메트릭 맵을 raw `bpf()` syscall로 열기; `BPF_OBJ_GET` 전 `access()` 검사로 맵 미존재 시 무소음 건너뛰기
 - `ebpf_read_and_reset()`: 메트릭 읽기 + 다음 실행을 위해 초기화 (원자적)
-- `executor.cc`: 시작 시 init, 실행 전 clear, `finish_output()`에서 read+점수 계산
+- `executor.cc`: 시작 시 init (늦은 BPF 배포를 위한 `execute_one()`의 재시도 포함), 실행 전 clear, 자식 프로세스가 `close_fds()` 전에 메트릭을 `OutputData` 공유 메모리에 기록, runner가 `finish_output()`에서 공유 메모리에서 읽기
 - UAF 점수 산식: rapid_reuse > 0 (+50), min_delay < 10μs (+30), reuse > 5 (+20) = 0-100
 
 ### 5e. Manager 배포 — **완료**
@@ -312,9 +312,10 @@
 - **버그 수정 (v1)**: 모든 eBPF 명령 출력을 `/dev/null`로 리다이렉트하여 crash reporter 간섭 방지
 - **버그 수정 (v2)**: 근본 원인은 VM 이미지에 bpffs 마운트포인트 부재 + 로더 행(hang) 가능성. 수정: mount 전 `mkdir -p /sys/fs/bpf`, 로더에 `timeout 10`으로 행 방지, 로더 출력을 `/tmp/probe-ebpf.log`에 저장하여 디버깅 가능. VM 이미지 fstab에 bpffs 항목 추가. BPF 헤더에서 커널 6.1.20 호환성을 위해 `accounted` 필드 제거.
 - **버그 수정 (v3)**: `executor.cc`에서 `ebpf_init()`이 shmem fd 연산보다 먼저 호출되어, runner가 coverage filter를 제공하지 않을 때 `BPF_OBJ_GET`이 fd 5/6 (`kMaxSignalFd`/`kCoverFilterFd`)을 가로챔. `fcntl()` 검사가 BPF map fd를 shmem fd로 오인하여 모든 VM에서 `mmap` 실패 유발. 수정: executor.cc exec 모드에서 `ebpf_init()` 호출을 모든 shmem fd 연산(`mmap_input`, `mmap_output`, CoverFilter 설정) 이후로 이동. 진단 코드 정리: `shmem.h`에서 `/tmp/shmem-diag.txt` 파일 쓰기 제거, `manager.go`에서 tier3 원시 출력 로깅 제거. `shmem.h`의 개선된 에러 메시지(errno, fd, size 정보 포함)는 유지.
+- **버그 수정 (v4)**: Go(manager) 측에서 eBPF 메트릭이 항상 0으로 표시. BPF 프로그램은 데이터를 수집하고 있었음. 근본 원인: `common_linux.h`의 `close_fds()`가 `close_range(3, MAX_FDS, 0)`을 호출하여 BPF map fd를 포함한 fd >= 3 전부 닫음. `finish_output()`의 eBPF 읽기가 다른 프로세스(runner)에서 `close_fds()` 이후에 실행되어 이미 닫힌 fd에 대해 `BPF_MAP_LOOKUP_ELEM`이 실패. 수정: (1) exec 자식 프로세스가 `close_fds()` 전에 eBPF 메트릭을 읽어 `OutputData` 공유 메모리의 atomic 필드에 기록, (2) runner의 `finish_output()`이 `ebpf_read_and_reset()` 직접 호출 대신 공유 메모리에서 읽기, (3) 늦은 BPF 배포를 위해 `execute_one()`에 `ebpf_init()` 재시도 추가, (4) `ebpf_init()`에서 `BPF_OBJ_GET` 전 `access()` 검사 추가. 검증 완료: 첫 실행부터 alloc/free 카운트 비-0 확인.
 
 ### 5f. 퍼저 피드백 — **완료**
-- `processResult()`: `statEbpfReuses`와 `statEbpfUafDetected` 통계 추적
+- `processResult()`: `statEbpfAllocs`, `statEbpfReuses`, `statEbpfUafDetected` 통계 추적
 - 비크래시 UAF 감지: UAF 점수 ≥ 70이면 `AddFocusCandidate()` → 포커스 모드 트리거
 - 웹 대시보드에서 통계 확인: `ebpf reuses` (비율), `ebpf uaf` (카운트)
 
