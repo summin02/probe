@@ -49,15 +49,19 @@ type TriageReasoning struct {
 
 // StrategyResult holds the AI fuzzing strategy recommendations.
 type StrategyResult struct {
-	SyscallWeights []SyscallWeight `json:"syscall_weights,omitempty"`
-	SeedPrograms   []SeedProgram   `json:"seed_programs,omitempty"`
-	MutationHints  MutationHints   `json:"mutation_hints"`
-	FocusTargets   []FocusTarget   `json:"focus_targets,omitempty"`
-	Summary        string          `json:"summary"`
-	Model          string          `json:"model"`
-	Timestamp      time.Time       `json:"timestamp"`
-	InputTokens    int             `json:"input_tokens"`
-	OutputTokens   int             `json:"output_tokens"`
+	SyscallWeights  []SyscallWeight `json:"syscall_weights,omitempty"`
+	SeedPrograms    []SeedProgram   `json:"seed_programs,omitempty"`
+	MutationHints   MutationHints   `json:"mutation_hints"`
+	FocusTargets    []FocusTarget   `json:"focus_targets,omitempty"`
+	Summary         string          `json:"summary"`
+	Model           string          `json:"model"`
+	Timestamp       time.Time       `json:"timestamp"`
+	InputTokens     int             `json:"input_tokens"`
+	OutputTokens    int             `json:"output_tokens"`
+	SeedsAccepted   int             `json:"seeds_accepted,omitempty"`
+	WeightsApplied  int             `json:"weights_applied,omitempty"`
+	SeedErrors      []string        `json:"seed_errors,omitempty"`
+	WeightErrors    []string        `json:"weight_errors,omitempty"`
 }
 
 type SyscallWeight struct {
@@ -691,6 +695,11 @@ func saveTriageResult(workdir, crashID string, result *TriageResult) {
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		log.Logf(0, "PROBE: failed to save triage result: %v", err)
 	}
+}
+
+// SaveStrategyResult saves the strategy result to disk (public for manager callback).
+func SaveStrategyResult(workdir string, result *StrategyResult) {
+	saveStrategyResult(workdir, result)
 }
 
 func saveStrategyResult(workdir string, result *StrategyResult) {

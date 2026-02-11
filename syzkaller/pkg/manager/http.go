@@ -401,6 +401,23 @@ func aiScoreColor(score int) string {
 	return "#F0F0F0"
 }
 
+// PROBE: isInternalCrashTitle filters syzkaller-internal crash titles from AI pages.
+func isInternalCrashTitle(title string) bool {
+	lower := strings.ToLower(title)
+	for _, p := range []string{
+		"suppressed report",
+		"lost connection to test machine",
+		"no output from test machine",
+		"test machine is not executing programs",
+		"executor failure",
+	} {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // PROBE: aiTriageOnDisk represents the full ai-triage.json on disk.
 type aiTriageOnDisk struct {
 	Score        int    `json:"score"`
@@ -1391,10 +1408,13 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 		data.NextBatchSec = 0
 	}
 
-	// Load crash analyses from disk.
+	// Load crash analyses from disk (skip syzkaller-internal crashes).
 	if serv.CrashStore != nil {
 		list, _ := serv.CrashStore.BugList()
 		for _, info := range list {
+			if isInternalCrashTitle(info.Title) {
+				continue
+			}
 			crash := UIAICrash{
 				ID:    info.ID,
 				Title: info.Title,
@@ -1423,7 +1443,7 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 	strategyPath := filepath.Join(serv.Cfg.Workdir, "ai-strategy.json")
 	if stratData, err := os.ReadFile(strategyPath); err == nil {
 		var strat struct {
-			Summary        string `json:"summary"`
+			Summary        string    `json:"summary"`
 			Timestamp      time.Time `json:"timestamp"`
 			SyscallWeights []struct {
 				Name   string  `json:"name"`
@@ -1441,6 +1461,10 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 				CrashTitle string `json:"crash_title"`
 				Priority   int    `json:"priority"`
 			} `json:"focus_targets"`
+			SeedsAccepted  int      `json:"seeds_accepted"`
+			WeightsApplied int      `json:"weights_applied"`
+			SeedErrors     []string `json:"seed_errors"`
+			WeightErrors   []string `json:"weight_errors"`
 		}
 		if json.Unmarshal(stratData, &strat) == nil {
 			data.HasStrategy = true
@@ -1452,6 +1476,11 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 			data.Strategy.SeedsInjected = len(strat.SeedPrograms)
+			data.Strategy.SeedsAccepted = strat.SeedsAccepted
+			data.Strategy.WeightsApplied = strat.WeightsApplied
+			data.Strategy.WeightsTotal = len(strat.SyscallWeights)
+			data.Strategy.SeedErrors = strat.SeedErrors
+			data.Strategy.WeightErrors = strat.WeightErrors
 			data.Strategy.MutationSummary = strat.MutationHints.Reason
 			if data.Strategy.MutationSummary == "" {
 				data.Strategy.MutationSummary = fmt.Sprintf("splice=%.1f insert=%.1f mutate=%.1f remove=%.1f",
@@ -1743,6 +1772,10 @@ type UIAIStrategy struct {
 	SyscallWeights  []UIAISyscallWeight
 	SeedsInjected   int
 	SeedsAccepted   int
+	WeightsApplied  int
+	WeightsTotal    int
+	SeedErrors      []string
+	WeightErrors    []string
 	MutationSummary string
 	FocusTargets    []UIAIFocusTarget
 }

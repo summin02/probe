@@ -163,14 +163,19 @@ func (mgr *Manager) aiOnStrategyResult(result *aitriage.StrategyResult) {
 		if len(unmatchedNames) > 0 {
 			log.Logf(0, "PROBE: AI syscall names not found: %v", unmatchedNames)
 		}
+		result.WeightsApplied = len(weights)
+		result.WeightErrors = unmatchedNames
 	}
 
 	// 2. Inject seed programs.
 	seedsInjected, seedsAccepted := 0, 0
+	var seedErrors []string
 	for _, seed := range result.SeedPrograms {
 		seedsInjected++
 		if err := f.InjectSeed(seed.Code); err != nil {
-			log.Logf(0, "PROBE: AI seed parse error: %v", err)
+			errMsg := fmt.Sprintf("%s: %v", seed.Target, err)
+			log.Logf(0, "PROBE: AI seed parse error: %s", errMsg)
+			seedErrors = append(seedErrors, errMsg)
 		} else {
 			seedsAccepted++
 		}
@@ -178,6 +183,8 @@ func (mgr *Manager) aiOnStrategyResult(result *aitriage.StrategyResult) {
 	if seedsInjected > 0 {
 		log.Logf(0, "PROBE: AI seeds: %d injected, %d accepted", seedsInjected, seedsAccepted)
 	}
+	result.SeedsAccepted = seedsAccepted
+	result.SeedErrors = seedErrors
 
 	// 3. Apply mutation hints to next focus jobs.
 	if result.MutationHints.Reason != "" {
@@ -205,4 +212,7 @@ func (mgr *Manager) aiOnStrategyResult(result *aitriage.StrategyResult) {
 			log.Logf(1, "PROBE: AI focus already active, skipped target '%v'", target.CrashTitle)
 		}
 	}
+
+	// Re-save strategy with applied results (seeds accepted, weight match counts).
+	aitriage.SaveStrategyResult(mgr.cfg.Workdir, result)
 }

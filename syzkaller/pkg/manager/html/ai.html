@@ -66,8 +66,8 @@ PROBE: AI-guided fuzzing dashboard page (Phase 3).
 <table class="list_table">
 <caption>Last Strategy ({{formatTime .Strategy.Timestamp}}):</caption>
 <tr><td class="title">Summary</td><td style="word-wrap:break-word; overflow-wrap:break-word; white-space:pre-wrap; max-width:700px">{{.Strategy.Summary}}</td></tr>
-<tr><td class="title">Syscall Weights</td><td style="word-wrap:break-word; overflow-wrap:break-word; max-width:700px">{{range .Strategy.SyscallWeights}}{{.Name}} {{printf "%.1f" .Weight}}x | {{end}}{{if not .Strategy.SyscallWeights}}-{{end}}</td></tr>
-<tr><td class="title">Seeds</td><td>{{.Strategy.SeedsInjected}} injected ({{.Strategy.SeedsAccepted}} accepted)</td></tr>
+<tr><td class="title">Syscall Weights</td><td style="word-wrap:break-word; overflow-wrap:break-word; max-width:700px">{{if .Strategy.WeightsApplied}}{{.Strategy.WeightsApplied}}/{{.Strategy.WeightsTotal}} applied | {{end}}{{range .Strategy.SyscallWeights}}{{.Name}} {{printf "%.1f" .Weight}}x | {{end}}{{if not .Strategy.SyscallWeights}}-{{end}}{{if .Strategy.WeightErrors}}<br><span style="color:#c44">Unmatched: {{range .Strategy.WeightErrors}}{{.}}, {{end}}</span>{{end}}</td></tr>
+<tr><td class="title">Seeds</td><td>{{.Strategy.SeedsInjected}} injected ({{.Strategy.SeedsAccepted}} accepted){{if .Strategy.SeedErrors}}<br><span style="color:#c44">Errors: {{range .Strategy.SeedErrors}}{{.}} | {{end}}</span>{{end}}</td></tr>
 <tr><td class="title">Mutation</td><td style="word-wrap:break-word; overflow-wrap:break-word; max-width:700px">{{.Strategy.MutationSummary}}</td></tr>
 <tr><td class="title">Focus</td><td style="word-wrap:break-word; overflow-wrap:break-word; max-width:700px">{{range .Strategy.FocusTargets}}{{.CrashTitle}} (p{{.Priority}}) | {{end}}{{if not .Strategy.FocusTargets}}-{{end}}</td></tr>
 </table>
