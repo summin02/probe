@@ -14,25 +14,38 @@ PROBE: AI-guided fuzzing dashboard page (Phase 3).
 
 {{if not .Disabled}}
 <br>
-<b>Crash Exploitability Analysis</b>
-<button id="analyzeBtn" onclick="triggerAI('analyze')" style="margin-left:10px">Analyze Now</button>
-<b>Fuzzing Strategy</b>
-<button id="stratBtn" onclick="triggerAI('strategize')" style="margin-left:10px">Strategize Now</button>
-({{.AnalyzedCount}} analyzed, {{.PendingCount}} pending)
-<br><br>
+<table class="list_table" style="width:auto">
+<caption>Actions:</caption>
+<tr>
+	<td class="title" style="vertical-align:top">Crash Analysis</td>
+	<td>
+		<button id="analyzeBtn" onclick="triggerAI('analyze')">Analyze Now</button>
+		<span style="color:#888; font-size:12px; margin-left:6px">LLM analyzes each crash report and scores exploitability (0-100)</span>
+	</td>
+</tr>
+<tr>
+	<td class="title" style="vertical-align:top">Fuzzing Strategy</td>
+	<td>
+		<button id="stratBtn" onclick="triggerAI('strategize')">Strategize Now</button>
+		<span style="color:#888; font-size:12px; margin-left:6px">LLM reviews coverage data and recommends syscall weights, seeds, focus targets</span>
+	</td>
+</tr>
+</table>
 
+<br>
 <b>Console</b>
-<div id="console" style="background:#1e1e1e; color:#d4d4d4; font-family:'Consolas','Courier New',monospace; font-size:12px; padding:10px; height:220px; overflow-y:auto; border:1px solid #555; border-radius:4px; margin-bottom:16px; white-space:pre-wrap;">Waiting for AI activity...
+<div id="console" style="background:#1e1e1e; color:#d4d4d4; font-family:'Consolas','Courier New',monospace; font-size:12px; padding:10px; height:200px; overflow-y:auto; border:1px solid #555; border-radius:4px; margin-bottom:16px; white-space:pre-wrap;">Waiting for AI activity...
 </div>
 
 {{if .Crashes}}
 <table class="list_table">
-<caption>Crash Exploitability:</caption>
+<caption>Crash Exploitability ({{.AnalyzedCount}} analyzed, {{.PendingCount}} pending):</caption>
 <thead><tr>
 	<th><a onclick="return sortTable(this, 'Title', textSort)" href="#">Title</a></th>
 	<th><a onclick="return sortTable(this, 'Score', numSort)" href="#">Score</a></th>
 	<th><a onclick="return sortTable(this, 'Class', textSort)" href="#">Class</a></th>
 	<th><a onclick="return sortTable(this, 'Vuln', textSort)" href="#">Vuln</a></th>
+	<th>Detail</th>
 	<th><a onclick="return sortTable(this, 'Time', textSort)" href="#">Time</a></th>
 </tr></thead>
 <tbody>
@@ -42,7 +55,8 @@ PROBE: AI-guided fuzzing dashboard page (Phase 3).
 	<td class="stat" {{if .ScoreColor}}style="background:{{.ScoreColor}}"{{end}}>{{if .HasScore}}{{.Score}}{{else}}-{{end}}</td>
 	<td>{{.ExploitClass}}</td>
 	<td>{{.VulnType}}</td>
-	<td class="time">{{if .HasScore}}{{formatTime .AnalyzedAt}}{{else}}pending{{end}}</td>
+	<td style="font-size:11px; max-width:400px">{{if .HasScore}}{{.Summary}}{{else}}<span style="color:#999">pending</span>{{end}}</td>
+	<td class="time">{{if .HasScore}}{{formatTime .AnalyzedAt}}{{else}}-{{end}}</td>
 </tr>
 {{end}}
 </tbody>
@@ -134,10 +148,8 @@ function pollLog() {
 	fetch('/api/ai/log').then(function(r) { return r.json(); }).then(function(data) {
 		var c = document.getElementById('console');
 		if (!c) return;
-		// Update status indicator.
 		var statusEl = document.getElementById('ai-status');
 		if (statusEl) statusEl.textContent = data.running ? 'Running...' : 'Active';
-		// Append new log lines.
 		if (data.lines && data.lines.length > lastLogLen) {
 			for (var i = lastLogLen; i < data.lines.length; i++) {
 				var entry = data.lines[i];
@@ -148,18 +160,15 @@ function pollLog() {
 			lastLogLen = data.lines.length;
 			c.scrollTop = c.scrollHeight;
 		}
-		// Re-enable buttons when not running.
 		if (!data.running) {
 			var ab = document.getElementById('analyzeBtn');
 			var sb = document.getElementById('stratBtn');
 			if (ab) { ab.disabled = false; ab.textContent = 'Analyze Now'; }
 			if (sb) { sb.disabled = false; sb.textContent = 'Strategize Now'; }
-			// Stop polling after a few more seconds.
 			if (pollTimer) { clearTimeout(pollTimer); }
 			pollTimer = setTimeout(function() { pollTimer = null; }, 5000);
 			return;
 		}
-		// Continue polling while running.
 		setTimeout(pollLog, 1500);
 	}).catch(function() {
 		setTimeout(pollLog, 3000);
@@ -180,7 +189,6 @@ function pollLog() {
 		}
 		lastLogLen = data.lines.length;
 		c.scrollTop = c.scrollHeight;
-		// If currently running, start polling.
 		if (data.running) pollLog();
 	});
 })();

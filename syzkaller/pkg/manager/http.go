@@ -404,10 +404,16 @@ func aiScoreColor(score int) string {
 type aiTriageOnDisk struct {
 	Score        int    `json:"score"`
 	ExploitClass string `json:"exploit_class"`
+	Summary      string `json:"summary"`
+	Confidence   string `json:"confidence"`
 	VulnType     string `json:"-"`
 	Reasoning    struct {
-		VulnType string `json:"vuln_type"`
+		VulnType     string `json:"vuln_type"`
+		SlabCache    string `json:"slab_cache"`
+		Primitive    string `json:"primitive"`
+		TimingWindow string `json:"timing_window"`
 	} `json:"reasoning"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 func loadAITriageResult(workdir, crashID string) *aiTriageOnDisk {
@@ -1387,6 +1393,12 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 				crash.ScoreColor = aiScoreColor(tr.Score)
 				crash.ExploitClass = tr.ExploitClass
 				crash.VulnType = tr.VulnType
+				crash.Summary = tr.Summary
+				crash.Confidence = tr.Confidence
+				crash.SlabCache = tr.Reasoning.SlabCache
+				crash.Primitive = tr.Reasoning.Primitive
+				crash.TimingWindow = tr.Reasoning.TimingWindow
+				crash.AnalyzedAt = tr.Timestamp
 				data.AnalyzedCount++
 			} else {
 				data.PendingCount++
@@ -1654,6 +1666,11 @@ type UIAICrash struct {
 	ScoreColor   string
 	ExploitClass string
 	VulnType     string
+	Summary      string
+	Confidence   string
+	SlabCache    string
+	Primitive    string
+	TimingWindow string
 	AnalyzedAt   time.Time
 }
 
