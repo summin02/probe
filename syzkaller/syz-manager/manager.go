@@ -690,11 +690,13 @@ func (mgr *Manager) runInstanceInner(ctx context.Context, inst *vm.Instance, opt
 					// timeout prevents loader hang from blocking executor startup.
 					// Failures are non-fatal — executor gracefully handles missing BPF maps.
 					ebpfSetupCmd = fmt.Sprintf(
-						"mkdir -p /sys/fs/bpf >/dev/null 2>&1; "+
-							"mount -t bpf bpf /sys/fs/bpf >/dev/null 2>&1; "+
-							"timeout 10 %v %v >/tmp/probe-ebpf.log 2>&1; ",
+						"mkdir -p /sys/fs/bpf 2>&1; "+
+							"mount -t bpf bpf /sys/fs/bpf 2>&1; "+
+							"timeout 10 %v %v 2>&1; "+
+							"echo PROBE-EBPF-LOADER-EXIT=$? 2>&1; "+
+							"ls -la /sys/fs/bpf/probe/ 2>&1; ",
 						vmLoader, vmBPFObj)
-					log.Logf(0, "PROBE: VM %v: eBPF heap monitor deployment queued", inst.Index())
+					log.Logf(0, "PROBE: VM %v: eBPF heap monitor deployment queued (loader=%v obj=%v)", inst.Index(), vmLoader, vmBPFObj)
 				}
 			}
 		}

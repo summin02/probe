@@ -198,6 +198,9 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 		fuzzer.handleCallInfo(req, res.Info.Extra, -1)
 
 		// PROBE: eBPF heap monitoring feedback (Phase 5).
+		if res.Info.EbpfAllocCount > 0 {
+			fuzzer.statEbpfAllocs.Add(int(res.Info.EbpfAllocCount))
+		}
 		if res.Info.EbpfReuseCount > 0 {
 			fuzzer.statEbpfReuses.Add(int(res.Info.EbpfReuseCount))
 		}

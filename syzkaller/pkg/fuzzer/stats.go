@@ -37,6 +37,7 @@ type Stats struct {
 	statExecCollide         *stat.Val
 	statCoverOverflows      *stat.Val
 	statCompsOverflows      *stat.Val
+	statEbpfAllocs          *stat.Val // PROBE: Phase 5
 	statEbpfReuses          *stat.Val // PROBE: Phase 5
 	statEbpfUafDetected     *stat.Val // PROBE: Phase 5
 }
@@ -94,6 +95,8 @@ func newStats(target *prog.Target) Stats {
 			stat.Rate{}, stat.NoGraph),
 		statCompsOverflows: stat.New("comps overflows", "Number of times the comparisons buffer overflowed",
 			stat.Rate{}, stat.NoGraph),
+		statEbpfAllocs: stat.New("ebpf allocs", "Kernel allocs observed by eBPF per execution",
+			stat.Rate{}, stat.Graph("ebpf")),
 		statEbpfReuses: stat.New("ebpf reuses", "Slab reuses detected by eBPF heap monitor",
 			stat.Rate{}, stat.Graph("ebpf")),
 		statEbpfUafDetected: stat.New("ebpf uaf", "Non-crashing UAF patterns detected by eBPF",

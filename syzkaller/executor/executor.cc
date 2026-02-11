@@ -154,6 +154,15 @@ struct alignas(8) OutputData {
 		flatbuffers::Offset<rpc::CallInfoRaw> offset;
 	} calls[kMaxCalls];
 
+	// PROBE: eBPF heap metrics written by exec child, read by runner in finish_output().
+	// The child process has the BPF map fd (via ebpf_init), but finish_output runs in the
+	// runner process which doesn't. So the child writes metrics here via shared memory.
+	std::atomic<uint32> ebpf_alloc;
+	std::atomic<uint32> ebpf_free;
+	std::atomic<uint32> ebpf_reuse;
+	std::atomic<uint32> ebpf_rapid;
+	std::atomic<uint64> ebpf_min_ns;
+
 	void Reset()
 	{
 		size.store(0, std::memory_order_relaxed);
@@ -161,6 +170,11 @@ struct alignas(8) OutputData {
 		completed.store(0, std::memory_order_relaxed);
 		num_calls.store(0, std::memory_order_relaxed);
 		result_offset.store(0, std::memory_order_relaxed);
+		ebpf_alloc.store(0, std::memory_order_relaxed);
+		ebpf_free.store(0, std::memory_order_relaxed);
+		ebpf_reuse.store(0, std::memory_order_relaxed);
+		ebpf_rapid.store(0, std::memory_order_relaxed);
+		ebpf_min_ns.store(0, std::memory_order_relaxed);
 	}
 };
 
@@ -955,6 +969,12 @@ void execute_one()
 	// Linux TASK_COMM_LEN is only 16, so the name needs to be compact.
 	snprintf(buf, sizeof(buf), "syz.%llu.%llu", procid, request_id);
 	prctl(PR_SET_NAME, buf);
+	// PROBE: Retry opening pinned eBPF metrics map if not yet available.
+	// The BPF loader is deployed by syz-manager via SSH after the VM boots,
+	// so the pinned map at /sys/fs/bpf/probe/metrics may not exist when
+	// the executor first starts. Retry in each child process (cheap syscall).
+	if (ebpf_metrics_fd < 0)
+		ebpf_init();
 	// PROBE: Clear stale eBPF metrics before execution
 	ebpf_read_and_reset();
 #endif
@@ -1165,6 +1185,20 @@ void execute_one()
 			}
 		}
 	}
+
+	// PROBE: Read eBPF metrics BEFORE close_fds() which closes all fds >= 3
+	// including the BPF map fd. Write metrics to shared memory so the runner
+	// can read them in finish_output().
+#if GOOS_linux
+	{
+		auto metrics = ebpf_read_and_reset();
+		output_data->ebpf_alloc.store((uint32)metrics.alloc_count, std::memory_order_relaxed);
+		output_data->ebpf_free.store((uint32)metrics.free_count, std::memory_order_relaxed);
+		output_data->ebpf_reuse.store((uint32)metrics.reuse_count, std::memory_order_relaxed);
+		output_data->ebpf_rapid.store((uint32)metrics.rapid_reuse_count, std::memory_order_relaxed);
+		output_data->ebpf_min_ns.store(metrics.min_reuse_delay_ns, std::memory_order_relaxed);
+	}
+#endif
 
 #if SYZ_HAVE_CLOSE_FDS
 	close_fds();
@@ -1489,23 +1523,22 @@ flatbuffers::span<uint8_t> finish_output(OutputData* output, int proc_id, uint64
 		}
 		calls[call.index] = call.offset;
 	}
-	// PROBE: Read eBPF heap metrics collected during this execution.
+	// PROBE: Read eBPF heap metrics from shared memory (written by exec child in execute_one).
 	uint32 ebpf_alloc = 0, ebpf_free = 0, ebpf_reuse = 0, ebpf_rapid = 0, ebpf_uaf_score = 0;
 	uint64 ebpf_min_ns = 0;
 #if GOOS_linux
 	{
-		auto metrics = ebpf_read_and_reset();
-		ebpf_alloc = (uint32)metrics.alloc_count;
-		ebpf_free = (uint32)metrics.free_count;
-		ebpf_reuse = (uint32)metrics.reuse_count;
-		ebpf_rapid = (uint32)metrics.rapid_reuse_count;
-		ebpf_min_ns = metrics.min_reuse_delay_ns;
+		ebpf_alloc = output->ebpf_alloc.load(std::memory_order_relaxed);
+		ebpf_free = output->ebpf_free.load(std::memory_order_relaxed);
+		ebpf_reuse = output->ebpf_reuse.load(std::memory_order_relaxed);
+		ebpf_rapid = output->ebpf_rapid.load(std::memory_order_relaxed);
+		ebpf_min_ns = output->ebpf_min_ns.load(std::memory_order_relaxed);
 		// Compute UAF exploitability score (0-100)
-		if (metrics.rapid_reuse_count > 0)
+		if (ebpf_rapid > 0)
 			ebpf_uaf_score += 50;
-		if (metrics.min_reuse_delay_ns > 0 && metrics.min_reuse_delay_ns < 10000)
+		if (ebpf_min_ns > 0 && ebpf_min_ns < 10000)
 			ebpf_uaf_score += 30;
-		if (metrics.reuse_count > 5)
+		if (ebpf_reuse > 5)
 			ebpf_uaf_score += 20;
 	}
 #endif

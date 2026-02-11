@@ -391,6 +391,13 @@ static int ebpf_metrics_fd = -1;
 
 static void ebpf_init()
 {
+	// Check if the pinned path exists first (avoids noisy BPF syscall errors).
+	const char* path = "/sys/fs/bpf/probe/metrics";
+	if (access(path, F_OK) != 0) {
+		// File doesn't exist yet; silently skip.
+		return;
+	}
+
 	// BPF_OBJ_GET: open pinned map by path
 	union {
 		struct {
@@ -402,14 +409,13 @@ static void ebpf_init()
 	} attr = {};
 	memset(&attr, 0, sizeof(attr));
 
-	const char* path = "/sys/fs/bpf/probe/metrics";
 	attr.pathname = (uint64)(unsigned long)path;
 	attr.bpf_fd = 0;
 	attr.file_flags = 0;
 
 	int fd = (int)syscall(__NR_bpf, PROBE_BPF_OBJ_GET, &attr, sizeof(attr));
 	if (fd < 0) {
-		debug("PROBE: eBPF metrics map not available (errno=%d)\n", errno);
+		debug("PROBE: eBPF metrics map BPF_OBJ_GET failed (errno=%d)\n", errno);
 		return;
 	}
 	ebpf_metrics_fd = fd;
