@@ -488,6 +488,10 @@ func (t *Triager) stepA(ctx context.Context) {
 		if c.Tier > maxTier {
 			continue
 		}
+		// Skip syzkaller-internal bugs that are not real kernel vulnerabilities.
+		if isSyzkallerInternalCrash(c.Title) {
+			continue
+		}
 		existing := loadTriageResult(t.workdir, c.ID)
 		if existing != nil {
 			// Skip unless variants have tripled since last analysis.
@@ -716,6 +720,25 @@ func saveCostTracker(workdir string, ct *CostTracker) {
 	}
 	path := filepath.Join(workdir, "ai-cost.json")
 	os.WriteFile(path, data, 0644)
+}
+
+// isSyzkallerInternalCrash returns true for crash titles that represent
+// syzkaller-internal issues rather than real kernel vulnerabilities.
+// These should not be sent to LLM for analysis.
+func isSyzkallerInternalCrash(title string) bool {
+	lower := strings.ToLower(title)
+	for _, pattern := range []string{
+		"suppressed report",
+		"lost connection to test machine",
+		"no output from test machine",
+		"test machine is not executing programs",
+		"executor failure",
+	} {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // recoverCostFromTriageResults scans existing ai-triage.json files and
