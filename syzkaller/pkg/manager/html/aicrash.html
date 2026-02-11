@@ -21,7 +21,7 @@ PROBE: AI crash exploitability analysis detail page (Phase 3).
 <br>
 <table class="list_table">
 <caption>Summary:</caption>
-<tr><td style="padding:10px; line-height:1.6">{{.Summary}}</td></tr>
+<tr><td style="padding:10px; line-height:1.6; word-wrap:break-word; overflow-wrap:break-word; white-space:pre-wrap; max-width:800px">{{.Summary}}</td></tr>
 </table>
 
 <br>
@@ -33,7 +33,7 @@ PROBE: AI crash exploitability analysis detail page (Phase 3).
 <tr><td class="title">Timing Window</td><td>{{.TimingWindow}}</td></tr>
 <tr><td class="title">Heap Spray</td><td>{{.SprayFeasible}}{{if .SprayObjects}} — {{.SprayObjects}}{{end}}</td></tr>
 <tr><td class="title">Cross-Cache</td><td>{{if .CrossCache}}Yes{{else}}No{{end}}</td></tr>
-<tr><td class="title">Controllable</td><td style="line-height:1.5">{{.Controllable}}</td></tr>
+<tr><td class="title">Controllable</td><td style="line-height:1.5; word-wrap:break-word; overflow-wrap:break-word; max-width:700px">{{.Controllable}}</td></tr>
 </table>
 
 {{if .BestVariant}}
