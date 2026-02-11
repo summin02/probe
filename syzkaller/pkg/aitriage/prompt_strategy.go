@@ -19,10 +19,14 @@ Your recommendations must be in these categories:
 3. MUTATION STRATEGY: How to adjust mutation weights
 4. FOCUS TARGETS: Which crashes deserve intensive exploration
 
-Rules:
-- Seed programs MUST use syzkaller program format (one syscall per line, e.g.:
-  "r0 = socket(0x2, 0x1, 0x0)\nbind(r0, &AUTO, AUTO)\nlisten(r0, 0x5)")
-- Syscall names must match syzkaller's naming (e.g., "socket$inet", "ioctl$KVM_RUN")
+CRITICAL RULES:
+- For syscall_weights and seed_programs, you MUST ONLY use syscall names from the
+  "Available Syscalls" list provided below. Do NOT invent syscall names.
+  If no exact match exists, skip that recommendation.
+- Seed programs MUST use valid syzkaller program format. Example:
+  "r0 = socket(0x2, 0x1, 0x0)\nbind(r0, &AUTO, AUTO)\nlisten(r0, 0x5)\naccept(r0, 0x0, 0x0)"
+  Each line is one syscall. Use r0, r1, r2 for return values. Use &AUTO for auto-generated pointers.
+  Use 0x prefix for hex constants. Do NOT use kernel function names as syscalls.
 - Weight adjustments are multipliers (1.0 = no change, 2.0 = double priority)
 - Be specific and actionable. Vague suggestions are useless.
 - Limit to at most 10 syscall weight adjustments, 3 seed programs, and 3 focus targets.
@@ -76,6 +80,17 @@ func buildStrategyPrompt(snapshot *FuzzingSnapshot) (string, string) {
 			sb.WriteString(fmt.Sprintf("  %s: %d\n", kv.Name, kv.Count))
 		}
 		sb.WriteString("\n")
+
+		// Provide full list of available syscall names for weight/seed recommendations.
+		sb.WriteString("### Available Syscalls (use ONLY these names for syscall_weights and seed_programs)\n")
+		// Sort alphabetically for clarity.
+		allNames := make([]string, 0, len(snapshot.SyscallCoverage))
+		for name := range snapshot.SyscallCoverage {
+			allNames = append(allNames, name)
+		}
+		sort.Strings(allNames)
+		sb.WriteString(strings.Join(allNames, ", "))
+		sb.WriteString("\n\n")
 	}
 
 	// Crash summaries.

@@ -296,7 +296,12 @@ func (t *Triager) IsRunning() bool {
 func (t *Triager) LastStrategy() *StrategyResult {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.strategy
+	if t.strategy == nil {
+		return nil
+	}
+	// Return a copy to avoid race with stepB() overwriting the pointer.
+	cp := *t.strategy
+	return &cp
 }
 
 func (t *Triager) Cost() CostSnapshot {
@@ -707,7 +712,9 @@ func loadCostTracker(workdir string) *CostTracker {
 	if err != nil {
 		return ct
 	}
-	json.Unmarshal(data, ct)
+	if err := json.Unmarshal(data, ct); err != nil {
+		log.Logf(0, "PROBE: failed to parse ai-cost.json: %v", err)
+	}
 	return ct
 }
 
@@ -716,10 +723,13 @@ func saveCostTracker(workdir string, ct *CostTracker) {
 	data, err := json.MarshalIndent(ct, "", "  ")
 	ct.mu.Unlock()
 	if err != nil {
+		log.Logf(0, "PROBE: failed to marshal cost tracker: %v", err)
 		return
 	}
 	path := filepath.Join(workdir, "ai-cost.json")
-	os.WriteFile(path, data, 0644)
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		log.Logf(0, "PROBE: failed to save ai-cost.json: %v", err)
+	}
 }
 
 // isSyzkallerInternalCrash returns true for crash titles that represent

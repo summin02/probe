@@ -114,16 +114,25 @@ func (mgr *Manager) aiOnTriageResult(crashID string, result *aitriage.TriageResu
 	if result.Score >= 70 {
 		info, err := mgr.crashStore.BugInfo(crashID, false)
 		if err != nil {
+			log.Logf(1, "PROBE: AI triage: failed to get bug info for %v: %v", crashID, err)
 			return
 		}
-		progs, _ := mgr.crashStore.VariantPrograms(info.Title)
+		progs, err := mgr.crashStore.VariantPrograms(info.Title)
+		if err != nil {
+			log.Logf(1, "PROBE: AI triage: failed to get variant programs for '%v': %v", info.Title, err)
+			return
+		}
 		if len(progs) > 0 {
 			if f := mgr.fuzzer.Load(); f != nil {
 				p, err := mgr.target.Deserialize(progs[0], prog.NonStrict)
-				if err == nil {
-					if f.AddFocusCandidate(p, info.Title, info.Tier) {
-						log.Logf(0, "PROBE: AI focus triggered for '%v' (score=%d)", info.Title, result.Score)
-					}
+				if err != nil {
+					log.Logf(1, "PROBE: AI triage: failed to deserialize program for '%v': %v", info.Title, err)
+					return
+				}
+				if f.AddFocusCandidate(p, info.Title, info.Tier) {
+					log.Logf(0, "PROBE: AI focus triggered for '%v' (score=%d)", info.Title, result.Score)
+				} else {
+					log.Logf(1, "PROBE: AI focus already active, queued '%v' for later", info.Title)
 				}
 			}
 		}
@@ -139,14 +148,20 @@ func (mgr *Manager) aiOnStrategyResult(result *aitriage.StrategyResult) {
 	// 1. Apply syscall weights to ChoiceTable.
 	if len(result.SyscallWeights) > 0 {
 		weights := make(map[int]float64)
+		var unmatchedNames []string
 		for _, sw := range result.SyscallWeights {
 			if syscall, ok := mgr.target.SyscallMap[sw.Name]; ok {
 				weights[syscall.ID] = sw.Weight
+			} else {
+				unmatchedNames = append(unmatchedNames, sw.Name)
 			}
 		}
 		if len(weights) > 0 {
 			f.ApplyAIWeights(weights)
-			log.Logf(0, "PROBE: AI applied %d syscall weights", len(weights))
+			log.Logf(0, "PROBE: AI applied %d/%d syscall weights", len(weights), len(result.SyscallWeights))
+		}
+		if len(unmatchedNames) > 0 {
+			log.Logf(0, "PROBE: AI syscall names not found: %v", unmatchedNames)
 		}
 	}
 
@@ -171,16 +186,23 @@ func (mgr *Manager) aiOnStrategyResult(result *aitriage.StrategyResult) {
 
 	// 4. Focus targets.
 	for _, target := range result.FocusTargets {
-		progs, _ := mgr.crashStore.VariantPrograms(target.CrashTitle)
+		progs, err := mgr.crashStore.VariantPrograms(target.CrashTitle)
+		if err != nil {
+			log.Logf(1, "PROBE: AI strategy: failed to get variant programs for '%v': %v", target.CrashTitle, err)
+			continue
+		}
 		if len(progs) == 0 {
 			continue
 		}
 		p, err := mgr.target.Deserialize(progs[0], prog.NonStrict)
 		if err != nil {
+			log.Logf(1, "PROBE: AI strategy: failed to deserialize program for '%v': %v", target.CrashTitle, err)
 			continue
 		}
 		if f.AddFocusCandidate(p, target.CrashTitle, target.Priority) {
 			log.Logf(0, "PROBE: AI focus target: '%v' (priority=%d)", target.CrashTitle, target.Priority)
+		} else {
+			log.Logf(1, "PROBE: AI focus already active, skipped target '%v'", target.CrashTitle)
 		}
 	}
 }

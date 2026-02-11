@@ -5,6 +5,7 @@ package fuzzer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"runtime"
@@ -44,6 +45,10 @@ type Fuzzer struct {
 	focusTitles  map[string]bool // titles that have been focused (prevents re-focus)
 	focusActive  bool            // true while a focus job is running
 	focusTarget  string          // title of the current focus target
+
+	// PROBE: AI mutation hints for focus jobs.
+	aiMutHintsMu sync.Mutex
+	aiMutHints   *prog.MutateOpts // nil = use default
 
 	execQueues
 }
@@ -559,11 +564,70 @@ func (fuzzer *Fuzzer) InjectSeed(progText string) error {
 	return nil
 }
 
-// PROBE: SetAIMutationHints stores LLM mutation hints.
+// PROBE: SetAIMutationHints applies LLM mutation hints to future focus jobs.
 // Accepts aitriage.MutationHints via interface{} to avoid import cycle.
-// Currently logged for reference; full mutation adjustment can be extended later.
+// The hints struct must have SpliceWeight, InsertWeight, MutateArgWeight, RemoveWeight float64 fields.
 func (fuzzer *Fuzzer) SetAIMutationHints(hints interface{}) {
-	fuzzer.Logf(0, "PROBE: AI mutation hints received: %+v", hints)
+	// Extract fields via JSON round-trip to avoid import cycle with aitriage.
+	type mutHints struct {
+		SpliceWeight    float64 `json:"splice_weight"`
+		InsertWeight    float64 `json:"insert_weight"`
+		MutateArgWeight float64 `json:"mutate_arg_weight"`
+		RemoveWeight    float64 `json:"remove_weight"`
+		Reason          string  `json:"reason"`
+	}
+	data, err := json.Marshal(hints)
+	if err != nil {
+		fuzzer.Logf(0, "PROBE: AI mutation hints marshal error: %v", err)
+		return
+	}
+	var mh mutHints
+	if err := json.Unmarshal(data, &mh); err != nil {
+		fuzzer.Logf(0, "PROBE: AI mutation hints unmarshal error: %v", err)
+		return
+	}
+
+	defaults := prog.DefaultMutateOpts
+	opts := prog.MutateOpts{
+		ExpectedIterations: defaults.ExpectedIterations,
+		MutateArgCount:     defaults.MutateArgCount,
+		SquashWeight:       defaults.SquashWeight,
+		SpliceWeight:       int(float64(defaults.SpliceWeight) * mh.SpliceWeight),
+		InsertWeight:       int(float64(defaults.InsertWeight) * mh.InsertWeight),
+		MutateArgWeight:    int(float64(defaults.MutateArgWeight) * mh.MutateArgWeight),
+		RemoveCallWeight:   int(float64(defaults.RemoveCallWeight) * mh.RemoveWeight),
+	}
+	// Clamp to at least 1 to avoid zero-division.
+	if opts.SpliceWeight < 1 {
+		opts.SpliceWeight = 1
+	}
+	if opts.InsertWeight < 1 {
+		opts.InsertWeight = 1
+	}
+	if opts.MutateArgWeight < 1 {
+		opts.MutateArgWeight = 1
+	}
+	if opts.RemoveCallWeight < 1 {
+		opts.RemoveCallWeight = 1
+	}
+
+	fuzzer.aiMutHintsMu.Lock()
+	fuzzer.aiMutHints = &opts
+	fuzzer.aiMutHintsMu.Unlock()
+
+	fuzzer.Logf(0, "PROBE: AI mutation hints applied — splice=%d, insert=%d, mutate_arg=%d, remove=%d (%s)",
+		opts.SpliceWeight, opts.InsertWeight, opts.MutateArgWeight, opts.RemoveCallWeight, mh.Reason)
+}
+
+// PROBE: getAIMutateOpts returns AI-adjusted mutation opts if set, otherwise default opts.
+func (fuzzer *Fuzzer) getAIMutateOpts() prog.MutateOpts {
+	fuzzer.aiMutHintsMu.Lock()
+	hints := fuzzer.aiMutHints
+	fuzzer.aiMutHintsMu.Unlock()
+	if hints != nil {
+		return *hints
+	}
+	return prog.DefaultMutateOpts
 }
 
 func setFlags(execFlags flatrpc.ExecFlag) flatrpc.ExecOpts {

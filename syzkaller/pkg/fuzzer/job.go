@@ -505,12 +505,14 @@ func (job *focusJob) run(fuzzer *Fuzzer) {
 	fuzzer.Logf(0, "PROBE: focus mode started for '%v' (tier %d)", job.title, job.tier)
 	job.info.Logf("focus target:\n%s", job.p.Serialize())
 
+	mutOpts := fuzzer.getAIMutateOpts()
 	for i := 0; i < focusMaxIters; i++ {
 		p := job.p.Clone()
-		p.Mutate(rnd, prog.RecommendedCalls,
+		p.MutateWithOpts(rnd, prog.RecommendedCalls,
 			fuzzer.ChoiceTable(),
 			fuzzer.Config.NoMutateCalls,
-			fuzzer.Config.Corpus.Programs())
+			fuzzer.Config.Corpus.Programs(),
+			mutOpts)
 		result := fuzzer.execute(job.exec, &queue.Request{
 			Prog:     p,
 			ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
