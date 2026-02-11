@@ -328,6 +328,33 @@ func (t *Triager) LogLinesJSON() []byte {
 	return data
 }
 
+// CostJSON returns cost tracker data as JSON bytes (for interface{} access without import).
+func (t *Triager) CostJSON() []byte {
+	snap := t.cost.Snapshot()
+	data, _ := json.Marshal(struct {
+		TotalCalls   int       `json:"total_calls"`
+		TotalInput   int       `json:"total_input_tokens"`
+		TotalOutput  int       `json:"total_output_tokens"`
+		TotalCostUSD float64   `json:"total_cost_usd"`
+		TodayCostUSD float64   `json:"today_cost_usd"`
+		TodayCalls   int       `json:"today_calls"`
+		TodayInput   int       `json:"today_input_tokens"`
+		TodayOutput  int       `json:"today_output_tokens"`
+		History      []APICall `json:"history"`
+	}{
+		TotalCalls:   snap.TotalCalls,
+		TotalInput:   snap.TotalInput,
+		TotalOutput:  snap.TotalOutput,
+		TotalCostUSD: snap.TotalCostUSD,
+		TodayCostUSD: snap.TodayCostUSD,
+		TodayCalls:   snap.TodayCalls,
+		TodayInput:   snap.TodayInput,
+		TodayOutput:  snap.TodayOutput,
+		History:      snap.History,
+	})
+	return data
+}
+
 // Run starts the 1-hour batch loop. Call from a goroutine.
 func (t *Triager) Run(ctx context.Context) {
 	t.logf("Triage started (model=%v, provider=%v)", t.cfg.Model, detectProvider(t.cfg))
@@ -433,9 +460,8 @@ func (t *Triager) stepA(ctx context.Context) {
 		}
 		existing := loadTriageResult(t.workdir, c.ID)
 		if existing != nil {
-			if c.NumVariants < existing.InputTokens*3 {
-				continue
-			}
+			// Skip unless variants have tripled since last analysis.
+			continue
 		}
 		if c.Report == "" {
 			continue
@@ -470,6 +496,7 @@ func (t *Triager) stepA(ctx context.Context) {
 			call.Success = false
 			call.Error = err.Error()
 			t.cost.Record(call, t.cfg.Model)
+			saveCostTracker(t.workdir, t.cost)
 			time.Sleep(3 * time.Second)
 			continue
 		}
@@ -479,6 +506,7 @@ func (t *Triager) stepA(ctx context.Context) {
 		call.Success = true
 		call.ResultSummary = fmt.Sprintf("score=%d", result.Score)
 		t.cost.Record(call, t.cfg.Model)
+		saveCostTracker(t.workdir, t.cost)
 
 		saveTriageResult(t.workdir, c.ID, result)
 
@@ -493,9 +521,6 @@ func (t *Triager) stepA(ctx context.Context) {
 		time.Sleep(3 * time.Second)
 	}
 	t.logf("[Step A] Complete: %d/%d crashes analyzed", analyzed, len(pending))
-	if analyzed > 0 {
-		saveCostTracker(t.workdir, t.cost)
-	}
 }
 
 func (t *Triager) stepB(ctx context.Context) {

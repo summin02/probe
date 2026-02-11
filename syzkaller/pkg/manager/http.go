@@ -1436,9 +1436,11 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Load cost tracker from disk.
-	costPath := filepath.Join(serv.Cfg.Workdir, "ai-cost.json")
-	if costData, err := os.ReadFile(costPath); err == nil {
+	// Load cost data from live Triager (in-memory) via JSON round-trip.
+	type costProvider interface {
+		CostJSON() []byte
+	}
+	if cp, ok := serv.Triager.(costProvider); ok {
 		var cost struct {
 			TotalCalls   int       `json:"total_calls"`
 			TotalInput   int       `json:"total_input_tokens"`
@@ -1459,29 +1461,31 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 				Error         string    `json:"error"`
 			} `json:"history"`
 		}
-		if json.Unmarshal(costData, &cost) == nil {
-			data.TotalCalls = cost.TotalCalls
-			data.TotalTokens = formatTokens(cost.TotalInput + cost.TotalOutput)
-			data.TotalCostUSD = cost.TotalCostUSD
-			data.TotalCostKRW = int(cost.TotalCostUSD * 1450)
-			data.TodayCalls = cost.TodayCalls
-			data.TodayTokens = formatTokens(cost.TodayInput + cost.TodayOutput)
-			data.TodayCostUSD = cost.TodayCostUSD
-			data.TodayCostKRW = int(cost.TodayCostUSD * 1450)
+		if costData := cp.CostJSON(); costData != nil {
+			if json.Unmarshal(costData, &cost) == nil {
+				data.TotalCalls = cost.TotalCalls
+				data.TotalTokens = formatTokens(cost.TotalInput + cost.TotalOutput)
+				data.TotalCostUSD = cost.TotalCostUSD
+				data.TotalCostKRW = int(cost.TotalCostUSD * 1450)
+				data.TodayCalls = cost.TodayCalls
+				data.TodayTokens = formatTokens(cost.TodayInput + cost.TodayOutput)
+				data.TodayCostUSD = cost.TodayCostUSD
+				data.TodayCostKRW = int(cost.TodayCostUSD * 1450)
 
-			// History (reverse order: newest first).
-			for i := len(cost.History) - 1; i >= 0; i-- {
-				h := cost.History[i]
-				data.History = append(data.History, UIAPICall{
-					Time:          h.Time,
-					Type:          h.Type,
-					Input:         h.InputTokens,
-					Output:        h.OutputTokens,
-					CostUSD:       h.CostUSD,
-					Success:       h.Success,
-					ResultSummary: h.ResultSummary,
-					Error:         h.Error,
-				})
+				// History (reverse order: newest first).
+				for i := len(cost.History) - 1; i >= 0; i-- {
+					h := cost.History[i]
+					data.History = append(data.History, UIAPICall{
+						Time:          h.Time,
+						Type:          h.Type,
+						Input:         h.InputTokens,
+						Output:        h.OutputTokens,
+						CostUSD:       h.CostUSD,
+						Success:       h.Success,
+						ResultSummary: h.ResultSummary,
+						Error:         h.Error,
+					})
+				}
 			}
 		}
 	}
