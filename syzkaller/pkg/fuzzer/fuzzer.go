@@ -41,11 +41,12 @@ type Fuzzer struct {
 	ctRegenerate chan struct{}
 
 	// PROBE: Focus Mode state.
-	focusMu      sync.Mutex
-	focusTitles  map[string]bool // titles that have been focused (prevents re-focus)
-	focusActive  bool            // true while a focus job is running
-	focusTarget  string          // title of the current focus target
-	focusPending []focusCandidate // queued candidates waiting for current focus to finish
+	focusMu        sync.Mutex
+	focusTitles    map[string]bool // titles that have been focused (prevents re-focus)
+	focusActive    bool            // true while a focus job is running
+	focusTarget    string          // title of the current focus target
+	focusPending   []focusCandidate // queued candidates waiting for current focus to finish
+	lastEbpfFocus  time.Time      // cooldown for eBPF-triggered focus (prevent over-triggering)
 
 	// PROBE: AI mutation hints for focus jobs.
 	aiMutHintsMu sync.Mutex
@@ -213,11 +214,19 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 		// Non-crashing UAF detection: high UAF score without crash → UAF-favorable pattern.
 		if res.Info.EbpfUafScore >= 70 && res.Status != queue.Hanged {
 			fuzzer.statEbpfUafDetected.Add(1)
-			fuzzer.Logf(0, "PROBE: eBPF detected UAF-favorable pattern (score=%d, reuse=%d, rapid=%d) in %s",
-				res.Info.EbpfUafScore, res.Info.EbpfReuseCount,
-				res.Info.EbpfRapidReuseCount, req.Prog)
-			// Trigger Focus Mode: tier 1 (critical) for non-crashing UAF patterns
-			fuzzer.AddFocusCandidate(req.Prog, fmt.Sprintf("PROBE:ebpf-uaf:%s", req.Prog.String()), 1)
+			// Cooldown: only trigger eBPF focus at most once per 5 minutes.
+			fuzzer.focusMu.Lock()
+			elapsed := time.Since(fuzzer.lastEbpfFocus)
+			fuzzer.focusMu.Unlock()
+			if elapsed >= 5*time.Minute {
+				fuzzer.Logf(0, "PROBE: eBPF detected UAF-favorable pattern (score=%d, reuse=%d, rapid=%d) in %s",
+					res.Info.EbpfUafScore, res.Info.EbpfReuseCount,
+					res.Info.EbpfRapidReuseCount, req.Prog)
+				fuzzer.AddFocusCandidate(req.Prog, fmt.Sprintf("PROBE:ebpf-uaf:%s", req.Prog.String()), 1)
+				fuzzer.focusMu.Lock()
+				fuzzer.lastEbpfFocus = time.Now()
+				fuzzer.focusMu.Unlock()
+			}
 		}
 	}
 
