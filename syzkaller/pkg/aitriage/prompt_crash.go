@@ -27,8 +27,8 @@ type ParsedReport struct {
 
 var (
 	reAccessType = regexp.MustCompile(`(?i)(Read|Write) of size (\d+)`)
-	reSlabCache  = regexp.MustCompile(`(?i)in cache (\S+)`)
-	reObjSize    = regexp.MustCompile(`(?i)object size[: ]+(\d+)`)
+	reSlabCache  = regexp.MustCompile(`(?i)(?:in cache|belongs to the cache) (\S+)`)
+	reObjSize    = regexp.MustCompile(`(?i)(?:object size[: ]+|of size )(\d+)`)
 	reOffset     = regexp.MustCompile(`(?i)offset (\d+)`)
 	reBugType    = regexp.MustCompile(`(?i)BUG: KASAN: (\S+)`)
 	reGuiltyFile = regexp.MustCompile(`(?m)^\s*(\S+\.\w+:\d+)`)
@@ -108,6 +108,13 @@ Evaluate the exploitability of the given crash based on these 5 criteria (weight
 
 IMPORTANT: Be conservative. Only rate exploitability high with concrete evidence.
 
+SCORING GUIDELINES for non-memory-corruption bugs:
+- Diagnostic/info-only WARNINGs (e.g. WARN_ON sanity checks): score 5
+- Logic bugs (assertion failures, invalid state transitions): score 10
+- WARNINGs with potential state corruption (e.g. refcount, locking issues): score 15-20
+- Memory-corruption bugs (UAF, OOB, double-free): use the 5-criteria weighted scoring above
+- UAF Write primitives should score HIGHER than UAF Read (Write enables overwrite, Read is info-leak only)
+
 You MUST respond with ONLY a valid JSON object matching this schema:
 {
   "score": <0-100>,
@@ -149,10 +156,10 @@ func buildCrashPrompt(c CrashForAnalysis) (string, string) {
 		sb.WriteString("\n")
 	}
 
-	// Include the raw report (truncated to ~3000 chars to save tokens).
+	// Include the raw report (truncated to ~5000 chars to preserve slab/alloc info).
 	report := c.Report
-	if len(report) > 3000 {
-		report = report[:3000] + "\n... [truncated]"
+	if len(report) > 5000 {
+		report = report[:5000] + "\n... [truncated]"
 	}
 	sb.WriteString("### Raw Report\n```\n")
 	sb.WriteString(report)

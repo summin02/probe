@@ -594,6 +594,7 @@ func (fuzzer *Fuzzer) ApplyAIWeights(weights map[int]float64) {
 // PROBE: InjectProgram injects an already-parsed program as a triage candidate.
 // Used by AI seed hints to inject corpus programs matching requested syscall combinations.
 func (fuzzer *Fuzzer) InjectProgram(p *prog.Prog) {
+	fuzzer.statCandidates.Add(1)
 	req := &queue.Request{
 		Prog:      p.Clone(),
 		ExecOpts:  setFlags(flatrpc.ExecFlagCollectSignal),
@@ -609,6 +610,7 @@ func (fuzzer *Fuzzer) InjectSeed(progText string) error {
 	if err != nil {
 		return err
 	}
+	fuzzer.statCandidates.Add(1)
 	req := &queue.Request{
 		Prog:      p,
 		ExecOpts:  setFlags(flatrpc.ExecFlagCollectSignal),

@@ -7,6 +7,7 @@ package aitriage
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -311,6 +312,9 @@ type Triager struct {
 	// Console log buffer for the /ai dashboard.
 	logMu  sync.Mutex
 	logBuf []LogEntry
+
+	// Track crash state for stepB skip logic.
+	lastCrashHash string
 
 	// Callbacks set by the manager for applying results.
 	OnTriageResult   func(crashID string, result *TriageResult)
@@ -655,6 +659,14 @@ func (t *Triager) stepA(ctx context.Context) {
 	t.logf("[Step A] Complete: %d/%d crashes analyzed", analyzed, len(pending))
 }
 
+func (t *Triager) crashHash(summaries []CrashSummary) string {
+	h := sha256.New()
+	for _, c := range summaries {
+		fmt.Fprintf(h, "%s:%d:%d;", c.Title, c.Score, c.Variants)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+}
+
 func (t *Triager) stepB(ctx context.Context) {
 	if t.GetSnapshot == nil {
 		return
@@ -663,6 +675,16 @@ func (t *Triager) stepB(ctx context.Context) {
 	snapshot := t.GetSnapshot()
 	if snapshot == nil {
 		t.logf("[Step B] No snapshot available (fuzzer not ready)")
+		return
+	}
+
+	// Skip strategy call if crash state hasn't changed since last run.
+	hash := t.crashHash(snapshot.CrashSummaries)
+	t.mu.Lock()
+	prevHash := t.lastCrashHash
+	t.mu.Unlock()
+	if prevHash != "" && hash == prevHash {
+		t.logf("[Step B] Crash state unchanged (hash=%s), skipping strategy call to save cost", hash)
 		return
 	}
 
@@ -692,6 +714,7 @@ func (t *Triager) stepB(ctx context.Context) {
 
 	t.mu.Lock()
 	t.strategy = result
+	t.lastCrashHash = hash
 	t.mu.Unlock()
 
 	saveStrategyResult(t.workdir, result)

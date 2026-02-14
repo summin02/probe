@@ -29,6 +29,9 @@ CRITICAL RULES:
 - Weight adjustments are multipliers (1.0 = no change, 2.0 = double priority)
 - Be specific and actionable. Vague suggestions are useless.
 - Limit to at most 10 syscall weight adjustments, 5 seed hints, and 3 focus targets.
+- FOCUS TARGETS: Prioritize crashes with highest exploitability scores.
+  A crash with score=40 (UAF Write) is FAR more valuable to explore than score=15 (WARNING).
+  Only include crashes with score >= 25 as focus targets.
 
 You MUST respond with ONLY a valid JSON object matching this schema:
 {
@@ -92,10 +95,15 @@ func buildStrategyPrompt(snapshot *FuzzingSnapshot) (string, string) {
 		sb.WriteString("\n\n")
 	}
 
-	// Crash summaries.
+	// Crash summaries (sorted by score descending — highest exploitability first).
 	if len(snapshot.CrashSummaries) > 0 {
-		sb.WriteString("### Crash Summary\n")
-		for _, c := range snapshot.CrashSummaries {
+		sorted := make([]CrashSummary, len(snapshot.CrashSummaries))
+		copy(sorted, snapshot.CrashSummaries)
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].Score > sorted[j].Score
+		})
+		sb.WriteString("### Crash Summary (sorted by exploitability score, highest first)\n")
+		for _, c := range sorted {
 			scoreStr := "-"
 			if c.Score > 0 {
 				scoreStr = fmt.Sprintf("%d", c.Score)
