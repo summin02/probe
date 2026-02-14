@@ -186,7 +186,17 @@ func (serv *HTTPServer) httpMain(w http.ResponseWriter, r *http.Request) {
 }
 
 func (serv *HTTPServer) httpConfig(w http.ResponseWriter, r *http.Request) {
-	serv.jsonPage(w, r, "config", serv.Cfg)
+	// Deep copy config and mask sensitive fields before exposing.
+	cfg := *serv.Cfg
+	if cfg.AITriage.APIKey != "" {
+		key := cfg.AITriage.APIKey
+		if len(key) > 8 {
+			cfg.AITriage.APIKey = key[:4] + "..." + key[len(key)-4:]
+		} else {
+			cfg.AITriage.APIKey = "****"
+		}
+	}
+	serv.jsonPage(w, r, "config", &cfg)
 }
 
 func (serv *HTTPServer) jsonPage(w http.ResponseWriter, r *http.Request, title string, data any) {
