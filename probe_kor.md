@@ -303,8 +303,10 @@
 ### 5a. BPF C 프로그램 — **완료**
 - `executor/ebpf/probe_ebpf.bpf.c` — `tracepoint/kmem/kfree`와 `tracepoint/kmem/kmalloc` 후킹
 - LRU 해시 맵 (8192 엔트리)으로 최근 해제된 포인터와 타임스탬프 추적
-- Array 맵에 실행당 메트릭 저장: alloc_count, free_count, reuse_count, rapid_reuse_count, min_reuse_delay_ns
+- Array 맵에 실행당 메트릭 저장: alloc_count, free_count, reuse_count, rapid_reuse_count, min_reuse_delay_ns, double_free_count, size_mismatch_count
 - Slab 재사용 (같은 포인터의 free→alloc) 및 빠른 재사용 (< 100μs = UAF 유리 조건) 감지
+- **Double-free 탐지**: kfree에서 ptr이 이미 freed_objects에 존재하면 이중 해제 (alloc 없이 두 번 free)
+- **Size-mismatch 탐지**: kmalloc에서 `bytes_alloc > 2 × bytes_req && bytes_alloc >= 128`이면 cross-cache/slab 낭비 감지
 
 ### 5b. BPF 로더 — **완료**
 - `tools/syz-ebpf-loader/main.go` — `cilium/ebpf`를 사용하는 독립 Go 바이너리
@@ -312,16 +314,18 @@
 - VM 배포용 정적 바이너리; 셋업 후 종료 (BPF는 커널에 지속)
 
 ### 5c. FlatBuffers 스키마 확장 — **완료**
-- `pkg/flatrpc/flatrpc.fbs`의 `ProgInfoRaw`에 6개 필드 추가:
+- `pkg/flatrpc/flatrpc.fbs`의 `ProgInfoRaw`에 8개 필드 추가:
   - `ebpf_alloc_count`, `ebpf_free_count`, `ebpf_reuse_count`, `ebpf_rapid_reuse_count` (uint32)
   - `ebpf_min_reuse_ns` (uint64), `ebpf_uaf_score` (uint32)
+  - `ebpf_double_free_count` (uint32, VT=26), `ebpf_size_mismatch_count` (uint32, VT=28)
 - 하위 호환: 구버전 executor에서는 기본값 0
+- flatc 버전 불일치로 재생성 불가하여 `flatrpc.h` (C++) + `flatrpc.go` (Go) 수동 편집
 
 ### 5d. Executor C++ 통합 — **완료**
 - `executor_linux.h`: `ebpf_init()`으로 고정된 메트릭 맵을 raw `bpf()` syscall로 열기; `BPF_OBJ_GET` 전 `access()` 검사로 맵 미존재 시 무소음 건너뛰기
 - `ebpf_read_and_reset()`: 메트릭 읽기 + 다음 실행을 위해 초기화 (원자적)
 - `executor.cc`: 시작 시 init (늦은 BPF 배포를 위한 `execute_one()`의 재시도 포함), 실행 전 clear, 자식 프로세스가 `close_fds()` 전에 메트릭을 `OutputData` 공유 메모리에 기록, runner가 `finish_output()`에서 공유 메모리에서 읽기
-- UAF 점수 산식: rapid_reuse > 0 (+50), min_delay < 10μs (+30), reuse > 5 (+20) = 0-100
+- UAF 점수 산식: rapid_reuse > 0 (+50), min_delay < 10μs (+30), reuse > 5 (+20), double_free > 0 (=100 강제), size_mismatch > 3 (+10), 최대 100 캡
 
 ### 5e. Manager 배포 — **완료**
 - Manager가 VM 시작 시 `syz-ebpf-loader` + `probe_ebpf.bpf.o`를 각 VM에 복사
@@ -335,9 +339,10 @@
 - **버그 수정 (v5)**: eBPF UAF 점수가 시간이 지나면 모든 프로그램에서 100으로 포화 (~5000회 이상 실행 후). 근본 원인: `freed_objects` LRU 맵이 프로그램 실행 간에 초기화되지 않아, 프로그램 N에서 해제된 포인터가 프로그램 N+1에서 "재사용"으로 감지되어 무한 축적. 수정: `ebpf_read_and_reset()`에서 `BPF_MAP_GET_NEXT_KEY` + `BPF_MAP_DELETE_ELEM` 루프 (리셋당 최대 512 엔트리)로 `freed_objects` 맵을 클리어. `ebpf_open_pinned()` 헬퍼로 metrics 맵과 함께 고정된 freed_objects 맵도 열기.
 
 ### 5f. 퍼저 피드백 — **완료**
-- `processResult()`: `statEbpfAllocs`, `statEbpfReuses`, `statEbpfUafDetected` 통계 추적
-- 비크래시 UAF 감지: UAF 점수 ≥ 70이면 `AddFocusCandidate()` → 포커스 모드 트리거
-- 웹 대시보드에서 통계 확인: `ebpf reuses` (비율), `ebpf uaf` (카운트)
+- `processResult()`: `statEbpfAllocs`, `statEbpfReuses`, `statEbpfUafDetected`, `statEbpfDoubleFree`, `statEbpfSizeMismatch` 통계 추적
+- 비크래시 UAF 감지: UAF 점수 ≥ 70이면 `AddFocusCandidate()` → 포커스 모드 트리거 (5분 쿨다운)
+- **Double-free Focus**: double-free 감지 시 항상 즉시 포커스 모드 트리거 (title dedup으로 중복 방지)
+- 웹 대시보드에서 통계 확인: `ebpf reuses` (비율), `ebpf uaf` (카운트), `ebpf double-free` (카운트), `ebpf size-mismatch` (비율) — 모두 `ebpf` 그래프
 
 ### 주요 설계 결정
 - **로더와 executor 분리**: 로더가 복잡한 BPF 로딩 처리 (cilium/ebpf), executor는 간단한 맵 읽기 (raw bpf() syscall)

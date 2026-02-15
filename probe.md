@@ -304,8 +304,10 @@ Host (syz-manager)              Guest VM
 ### 5a. BPF C Program — **DONE**
 - `executor/ebpf/probe_ebpf.bpf.c` — hooks `tracepoint/kmem/kfree` and `tracepoint/kmem/kmalloc`
 - LRU hash map (8192 entries) tracks recently freed pointers with timestamps
-- Array map stores per-execution metrics: alloc_count, free_count, reuse_count, rapid_reuse_count, min_reuse_delay_ns
+- Array map stores per-execution metrics: alloc_count, free_count, reuse_count, rapid_reuse_count, min_reuse_delay_ns, double_free_count, size_mismatch_count
 - Detects slab reuse (free→alloc of same pointer) and rapid reuse (< 100us = UAF-favorable)
+- **Double-free detection**: kfree checks if ptr already exists in freed_objects (freed twice without intervening alloc)
+- **Size-mismatch detection**: kmalloc flags when `bytes_alloc > 2 * bytes_req && bytes_alloc >= 128` (cross-cache/slab waste)
 
 ### 5b. BPF Loader — **DONE**
 - `tools/syz-ebpf-loader/main.go` — standalone Go binary using `cilium/ebpf`
@@ -313,16 +315,18 @@ Host (syz-manager)              Guest VM
 - Static binary for VM deployment; exits after setup (BPF persists in kernel)
 
 ### 5c. FlatBuffers Schema Extension — **DONE**
-- Added 6 fields to `ProgInfoRaw` in `pkg/flatrpc/flatrpc.fbs`:
+- Added 8 fields to `ProgInfoRaw` in `pkg/flatrpc/flatrpc.fbs`:
   - `ebpf_alloc_count`, `ebpf_free_count`, `ebpf_reuse_count`, `ebpf_rapid_reuse_count` (uint32)
   - `ebpf_min_reuse_ns` (uint64), `ebpf_uaf_score` (uint32)
+  - `ebpf_double_free_count` (uint32, VT=26), `ebpf_size_mismatch_count` (uint32, VT=28)
 - Backward compatible: default 0 for old executors
+- Manual hand-edit of generated `flatrpc.h` (C++) and `flatrpc.go` (Go) since flatc version mismatch prevents regeneration
 
 ### 5d. Executor C++ Integration — **DONE**
 - `executor_linux.h`: `ebpf_init()` opens pinned metrics map via raw `bpf()` syscall; `access()` check before `BPF_OBJ_GET` to silently skip when map not yet pinned
 - `ebpf_read_and_reset()`: reads metrics + zeros for next execution (atomic)
 - `executor.cc`: init on startup (with retry in `execute_one()` for late BPF deployment), clear before execution, child writes metrics to `OutputData` shared memory BEFORE `close_fds()`, runner reads from shared memory in `finish_output()`
-- UAF score formula: rapid_reuse > 0 (+50), min_delay < 10us (+30), reuse > 5 (+20) = 0-100
+- UAF score formula: rapid_reuse > 0 (+50), min_delay < 10us (+30), reuse > 5 (+20), double_free > 0 (=100 override), size_mismatch > 3 (+10), capped at 100
 
 ### 5e. Manager Deployment — **DONE**
 - Manager copies `syz-ebpf-loader` + `probe_ebpf.bpf.o` to each VM at startup
@@ -336,9 +340,10 @@ Host (syz-manager)              Guest VM
 - **Bugfix (v5)**: eBPF UAF score saturated to 100 for ALL programs over time (~5000+ executions). Root cause: `freed_objects` LRU map was never cleared between program executions, so freed pointers from program N appeared as "reuse" in program N+1, causing unbounded accumulation. Fixed: `ebpf_read_and_reset()` now iterates `freed_objects` map with `BPF_MAP_GET_NEXT_KEY` + `BPF_MAP_DELETE_ELEM` loop (up to 512 entries per reset) to clear stale entries. Opened pinned freed_objects map via `ebpf_open_pinned()` helper alongside metrics map.
 
 ### 5f. Fuzzer Feedback — **DONE**
-- `processResult()`: tracks `statEbpfAllocs`, `statEbpfReuses` and `statEbpfUafDetected` stats
-- Non-crashing UAF detection: UAF score ≥ 70 triggers `AddFocusCandidate()` → Focus Mode
-- Stats visible in web dashboard: `ebpf reuses` (rate), `ebpf uaf` (count)
+- `processResult()`: tracks `statEbpfAllocs`, `statEbpfReuses`, `statEbpfUafDetected`, `statEbpfDoubleFree`, `statEbpfSizeMismatch` stats
+- Non-crashing UAF detection: UAF score ≥ 70 triggers `AddFocusCandidate()` → Focus Mode (5-min cooldown)
+- **Double-free Focus**: Any double-free detection always triggers Focus Mode immediately (cooldown via title dedup)
+- Stats visible in web dashboard: `ebpf reuses` (rate), `ebpf uaf` (count), `ebpf double-free` (count), `ebpf size-mismatch` (rate) — all on `ebpf` graph
 
 ### Key Design Decisions
 - **Separate loader + executor reads**: Loader handles complex BPF loading (cilium/ebpf), executor does simple map reads (raw bpf() syscall). Clean separation.
