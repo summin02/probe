@@ -532,17 +532,134 @@ clang -O2 -g -target bpf -D__TARGET_ARCH_x86 \
 cd syzkaller && make host
 ```
 
+## Phase 8: 뮤테이션 & 커버리지 혁신 — 계획됨
+
+**목표**: 스마트 뮤테이션 전략, 다목적 최적화, 향상된 exploit 탐지. 총 오버헤드 < 3.5%, 추가 AI API 비용 없음.
+
+**분석 기반**: `prog/mutation.go`, `pkg/fuzzer/dezzer.go`, `pkg/fuzzer/job.go` 코드 수준 심층 리뷰 + 15+ 논문 (NDSS/CCS/ICSE/ISSTA 2022-2025). 각 기술을 런타임 성능 영향, 현실적 효과 (논문 최대치 아닌 기대치), 기존 PROBE 아키텍처와의 시너지 기준으로 평가.
+
+### 8a. Write-to-freed eBPF 탐지
+
+**목표**: `copy_from_user` kprobe로 freed slab 객체에 대한 write 탐지 — 거의 확실한 exploit 가능성 신호.
+
+**설계**: `_copy_from_user`에 kprobe, 대상 주소를 `cache_freed` LRU 맵 (Phase 7c)과 교차 확인. 2단계 필터링: (1) 주소 범위 사전 필터 (slab 힙만, 90%+ 조기 탈출), (2) 50ms 시간 창 + 3회 통계적 확인.
+
+**오버헤드**: < 1.5%. **기대 효과**: Focus Mode 우선순위 결정을 위한 강력한 exploit 신호.
+
+**리스크 대응**: `kmem_cache_alloc` 추가 kprobe 없음 (오버헤드 과다). 대신: 시간 창 (50ms) + 통계적 dedup (3회 연속 트리거 = 확정, 1회 = 후보).
+
+**파일**: `executor/ebpf/write_to_freed.bpf.c` (신규), `executor/ebpf/ebpf_monitor.go`, `pkg/flatrpc/flatrpc.fbs` (+1 필드), `pkg/fuzzer/fuzzer.go` (processResult)
+
+### 8b. 연산자-쌍 Thompson Sampling (MuoFuzz)
+
+**목표**: 연속 뮤테이션 연산자 간 조건부 확률 학습 — P(next_op 성공 | prev_op).
+
+**출처**: MuoFuzz (FuzzBench/MAGMA). DEzzer를 5개 독립 분포에서 5×5 = 25개 쌍 분포로 확장.
+
+**설계**: DEzzer에 `alpha[prev_op][next_op]`, `beta[prev_op][next_op]`. 쌍 데이터 < 50건이면 단일 op TS로 fallback. Feature flag로 on/off 가능.
+
+**오버헤드**: < 0.1% (25개 float = 200 bytes, O(1) lookup). **기대 효과**: +5-10% 뮤테이션 효율.
+
+**파일**: `pkg/fuzzer/dezzer.go` (쌍 통계), `prog/mutation.go` (루프 내 prev_op 추적)
+
+### 8c. 다목적 메타-밴딧 (MobFuzz)
+
+**목표**: 커버리지만이 아닌 다목적 최적화 (coverage + memory_safety + priv_esc).
+
+**출처**: MobFuzz (NDSS 2022), user-space AFL에서 커널 퍼징으로 적응 (기존 eBPF 신호 활용).
+
+**설계**: 목표별 독립 TS를 가진 메타-밴딧 아키텍처:
+- Layer 0: UCB-1이 목표 선택 (coverage / memory_safety / priv_esc), 100실행 epoch 단위
+- Layer 1: 목표별 operator TS (각 목표가 자체 DEzzer 가중치 보유)
+- `memory_safety_score = uaf_base * 1.0 + cross_cache * 0.5 + double_free * 0.8`
+- 동적 coverage 하한: 70% (처음 2시간) → 50% (2-8시간) → 30% (8시간+)
+
+**희소 보상 해결**: 보상 증폭 없음. 각 목표가 자체 보상 신호 (epoch 내 이벤트 비율)로 독립 TS 운영, 희귀 이벤트 문제 구조적 해결.
+
+**AI 연동**: AI strategy가 UCB prior 방향 조정 (수치가 아닌 방향), 예: "memory_safety prior 올려" → alpha_m += 10.
+
+**오버헤드**: < 0.5%. **기대 효과**: +50-100% 고위험 버그 발견. **구현 순서**: 마지막 (8a/8b/8e/8f/8d 안정화 후).
+
+**리스크 대응**: 최대 3개 목표. Feature flag. 계층적 분리.
+
+**파일**: `pkg/fuzzer/dezzer.go` (메타-밴딧, 목표별 TS), `pkg/fuzzer/fuzzer.go` (processResult 라우팅), `pkg/aitriage/prompt_strategy.go` (목표 가중치)
+
+### 8d. MOCK 컨텍스트 인식 의존성 (BiGRU)
+
+**목표**: BiGRU 언어 모델로 syscall 시퀀스 의존성 학습 → 컨텍스트 인식 뮤테이션.
+
+**출처**: MOCK (NDSS 2024). BiGRU (embed=64, hidden=128, ~1-2MB 모델). 새 커버리지를 트리거한 코퍼스 프로그램으로 학습. 2시간마다 재학습. Top-k=15 샘플링. UCB-1이 정적 vs 컨텍스트 인식 뮤테이션 밸런싱.
+
+**설계**: Python subprocess (PyTorch) gRPC 서비스. Go가 `insertCall()`에서 50% 확률로 모델 쿼리 (50% fallback ChoiceTable). 5초마다 health check, 장애 시 자동 재시작 + ChoiceTable fallback.
+
+**오버헤드**: < 1% (GPU 추론 < 1ms, RTX 3070 Ti). 학습: 2시간마다 ~30초 (논블로킹). **기대 효과**: +3-12% 커버리지 (논문 평균, +32% 최대치 아님).
+
+**콜드 스타트**: 첫 1시간은 정적 의존성만 사용 (UCB-1이 자연스럽게 처리).
+
+**파일**: `tools/mock_model/` (신규 Python 패키지), `pkg/fuzzer/ngram.go` (Go 클라이언트 + gRPC), `prog/mutation.go` (insertCall 통합), `syz-manager/manager.go` (subprocess 생명주기)
+
+### 8e. 클러스터별 Thompson Sampling (SeamFuzz)
+
+**목표**: 커널 서브시스템 클러스터별 별도 DEzzer 가중치 유지.
+
+**출처**: SeamFuzz (ICSE 2023). 프로그램을 주요 syscall 서브시스템으로 클러스터링: fs, net, mm, ipc, device, other.
+
+**설계**: 뮤테이션 시 다수결 기반 분류 (O(n), < 0.001ms). `prog.Prog`에 캐싱하지 않음 (뮤테이션 후 stale). DEzzer가 클러스터별 alpha/beta 유지. 클러스터 데이터 < 100건이면 전역 TS fallback.
+
+**오버헤드**: < 0.2%. **기대 효과**: +3-8% 크래시 발견 (서브시스템별 최적화).
+
+**파일**: `pkg/fuzzer/dezzer.go` (클러스터 상태, 클러스터별 가중치), `pkg/fuzzer/fuzzer.go` (classifyProgram)
+
+### 8f. 유효 컴포넌트 추론 (경량 SeqFuzz)
+
+**목표**: 프로그램 내 크래시 재현에 필수적인 syscall 식별, 해당 call에 뮤테이션 집중.
+
+**출처**: SeqFuzz (Inscrypt 2025) 개념, 정적 ICFG 분석 없이 동적 ablation으로 경량화.
+
+**설계**: Focus job 전용. Focus job 시작 시: call 하나씩 제거, 3회 실행. 제거 시 크래시 안 나면 = essential. essential call은 mutate_arg 집중, non-essential call은 insert/splice로 교체. 프로그램 길이 < 5이면 ablation skip. 크래시 타이틀 기준 결과 캐싱.
+
+**오버헤드**: Focus job 시작 시 5-15회 추가 실행 (< 1초). **기대 효과**: Focus job 효율 2-3배 향상.
+
+**파일**: `pkg/fuzzer/job.go` (focusJob ablation 단계), `pkg/fuzzer/fuzzer.go` (ablation 캐시)
+
+### Phase 8 구현 순서
+
+```
+8a (Write-to-freed) → 8b (Op-pair TS) → 8e (Cluster TS) → 8f (Effective Component) → 8d (MOCK BiGRU) → 8c (Multi-obj, 마지막)
+```
+
+이유: 8a가 가장 단순하고 즉각적 가치. 8b/8e는 DEzzer 점진적 확장. 8f는 Focus Mode 강화. 8d는 Python 인프라 필요. 8c는 8a가 새 목표 신호를 제공하고 다른 기능이 안정화된 후에만 활성화.
+
+### Phase 8 리스크 요약
+
+| 리스크 | 서브페이즈 | 확률 | 영향 | 대응 |
+|--------|-----------|------|------|------|
+| copy_from_user 오버헤드 | 8a | 중 | 중 | 주소 범위 사전 필터 (slab 힙만) |
+| cache_freed stale entry | 8a | 높 | 중 | 50ms 시간 창 + 3회 통계적 확인 |
+| 쌍 분포 수렴 지연 | 8b | 중 | 낮 | 쌍 데이터 < 50 시 단일 op fallback |
+| 목표 충돌 (coverage ↔ UAF) | 8c | 높 | 높 | 목표별 독립 TS 메타-밴딧 + 동적 coverage 하한 |
+| 희소 eBPF 보상 신호 | 8c | 높 | 높 | 목표별 epoch 비율 보상 (증폭 불요) |
+| DEzzer 복잡도 폭증 | 8b+c+e | 중 | 높 | 계층적 분리 + feature flag + 점진적 활성화 |
+| Python↔Go IPC 불안정 | 8d | 중 | 높 | gRPC + health check + ChoiceTable auto-fallback |
+| 모델 품질 = 코퍼스 품질 | 8d | 중 | 중 | UCB-1 자동 밸런싱 + 회귀 시 롤백 |
+| Flaky crash ablation 오분류 | 8f | 높 | 중 | 3회 반복 + deflake 재사용 |
+| 누적 오버헤드 | 전체 | 중 | 중 | feature별 측정, 5% 초과 시 비활성화 |
+
+### Phase 8 검증
+
+각 서브페이즈: `go build` + `go vet` → 1시간 퍼징 (exec/sec 기준선) → 4시간 실행 (크래시 발견 비교).
+
 ## Phase 6+: 고급 개선 로드맵
 
 **상세 로드맵**: `syzkaller/probe_log/improvement_roadmap.md` 참조 (기술 상세, 논문 레퍼런스, 비용 예측 포함).
 
-30+ 논문 (CCS/NDSS/ASPLOS/USENIX 2024-2026) 서베이 결과 39개 적용 가능 기술을 식별하고 7개 Phase로 우선순위화:
+30+ 논문 (CCS/NDSS/ASPLOS/USENIX 2022-2026) 서베이 결과 39개 적용 가능 기술을 식별하고 7개 Phase로 우선순위화:
 
 | Phase | 초점 | 일정 | 핵심 기술 | 예상 효과 |
 |-------|------|------|----------|----------|
 | 6 | AI 비용 최적화 + 스케줄링 | 1주차 | Batch API, Prompt Caching, Tiered Routing, T-Scheduler, SyzMini, DEzzer | **API 비용 -80%**, 스케줄링 개선 |
 | 7 | 핵심 탐지력 강화 | 2-3주차 | SyzGPT (DRAG), CountDown (refcount), Cross-cache, 권한상승, GPTrace | **취약점 탐지 +323%**, UAF +66% |
-| 8 | 뮤테이션 & 커버리지 혁신 | 3-4주차 | MOCK, SeqFuzz, MobFuzz, 커버리지 피드백, Write-to-freed | **커버리지 +32%**, 버그 3-4.5x |
+| 8 | 뮤테이션 & 커버리지 혁신 | 3-4주차 | Write-to-freed, Op-pair TS, Multi-obj MAB, MOCK BiGRU, Cluster TS, Effective Component | **커버리지 +3-12%**, 고위험 버그 2-3x |
 | 9 | 고급 커버리지 & 탐지 | 2개월 | KBinCov, Page-level UAF, Context-sensitive, FD, Anamnesis | **바이너리 커버리지 +87%** |
 | 10 | 스펙 자동 생성 | 2-3개월 | KernelGPT, SyzForge, SyzSpec | **커버리지 +13-18%**, 새 syscall |
 | 11 | 동시성 버그 | 3개월 | LACE, ACTOR, OZZ | **커버리지 +38%**, 레이스 컨디션 |
@@ -555,9 +672,9 @@ cd syzkaller && make host
 - KernelGPT/SyzForge 스펙 생성 (+$0.50-2.00/회)
 
 ### 무비용 기술 (순수 코드 변경)
-- 모든 스케줄링 개선 (T-Scheduler, DEzzer, MobFuzz)
-- 모든 eBPF 확장 (refcount, cross-cache, page-level, FD, 권한상승)
-- 뮤테이션 개선 (MOCK, SeqFuzz, SyzMini)
+- 모든 스케줄링 개선 (T-Scheduler, DEzzer, MobFuzz 다목적)
+- 모든 eBPF 확장 (refcount, cross-cache, page-level, FD, 권한상승, write-to-freed)
+- 뮤테이션 개선 (MOCK BiGRU, Op-pair TS, Cluster TS, Effective Component, SyzMini)
 - 커버리지 확장 (KBinCov, context-sensitive)
 - 동시성 테스팅 (LACE, ACTOR)
 
@@ -567,7 +684,13 @@ cd syzkaller && make host
 |------|------|-------------|
 | SyzGPT | ISSTA 2025 | 의존성 기반 RAG, 취약점 탐지 +323% — Phase 7 |
 | CountDown | CCS 2024 | Refcount 기반 UAF, +66.1% UAF — Phase 7 |
-| MOCK | NDSS 2024 | 컨텍스트 인식 뮤테이션, 커버리지 +32% — Phase 8 |
+| MOCK | NDSS 2024 | 컨텍스트 인식 BiGRU 뮤테이션, 커버리지 +3-12% 평균 — Phase 8d |
+| MuoFuzz | FuzzBench 2024 | 연산자-쌍 시퀀스 학습 — Phase 8b |
+| MobFuzz | NDSS 2022 | 다목적 MAB, 버그 3x (user-space, 적응) — Phase 8c |
+| SeamFuzz | ICSE 2023 | 클러스터별 Thompson Sampling — Phase 8e |
+| SeqFuzz | Inscrypt 2025 | 유효 컴포넌트 추론 (경량 적응) — Phase 8f |
+| SyzAgent | 2025 | LLM choice table 업데이트 — Phase 3 강화 |
+| SyzMutateX | DMIT 2025 | LLM 기반 뮤테이션 + UCB 에너지, 커버리지 +15.8% — 향후 |
 | Snowplow | ASPLOS 2025 | ML 뮤테이션 (Google DeepMind), 4.8x 가속 — Phase 12 |
 | KernelGPT | ASPLOS 2025 | LLM 스펙 생성, 24 버그, 11 CVE — Phase 10 |
 | GPTrace | ICSE 2026 | LLM 임베딩 크래시 디덥 — Phase 7 |
@@ -575,8 +698,6 @@ cd syzkaller && make host
 | SyzMini | ATC 2025 | 최소화 최적화, 비용 -60.7% — Phase 6 |
 | LACE | 2025 | eBPF sched_ext 동시성, 커버리지 +38% — Phase 11 |
 | Anamnesis | 2026 | LLM 익스플로잇 생성, ~$30/exploit — Phase 9 |
-| MobFuzz | NDSS 2024 | 다목적 MAB, 버그 3x — Phase 8 |
-| SeqFuzz | Inscrypt 2025 | 유효 컴포넌트 추론, 버그 4.5x — Phase 8 |
 | SLUBStick | USENIX Sec 2024 | Cross-cache 공격, 99% 성공률 — Phase 12 |
 | ACTOR | USENIX Sec 2023 | 동시성 테스팅 — Phase 11 |
 | SyzScope | USENIX Sec 2022 | "저위험" 버그의 15%가 실제 고위험 — Phase 1+2 동기 |
@@ -599,5 +720,8 @@ cd syzkaller && make host
 | `sys/linux/*.txt` | Syscall 기술 (syzlang) |
 | `executor/executor.cc` | VM 내 syscall 실행기 (C++) |
 | `executor/ebpf/probe_ebpf.bpf.c` | eBPF 힙 모니터 (BPF C) |
+| `executor/ebpf/write_to_freed.bpf.c` | Write-to-freed 탐지기 (BPF C) — Phase 8a |
+| `pkg/fuzzer/dezzer.go` | DEzzer TS+DE 옵티마이저 (쌍/클러스터/메타-밴딧) |
+| `tools/mock_model/` | MOCK BiGRU 모델 서비스 (Python) — Phase 8d |
 | `tools/syz-ebpf-loader/main.go` | BPF 로더 바이너리 (Go) |
 | `pkg/flatrpc/flatrpc.fbs` | FlatBuffers RPC 스키마 |

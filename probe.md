@@ -574,17 +574,134 @@ clang -O2 -g -target bpf -D__TARGET_ARCH_x86 \
 cd syzkaller && make host  # Builds all host tools including syz-manager
 ```
 
+## Phase 8: Mutation & Coverage Innovation — PLANNED
+
+**Goal**: Smarter mutation strategies, multi-objective optimization, and enhanced exploit detection. Total overhead < 3.5%, no additional AI API cost.
+
+**Analysis basis**: Deep code-level review of `prog/mutation.go`, `pkg/fuzzer/dezzer.go`, `pkg/fuzzer/job.go`, and 15+ papers (NDSS/CCS/ICSE/ISSTA 2022-2025). Each technique evaluated for runtime performance impact, realistic effectiveness (not paper maximums), and synergy with existing PROBE architecture.
+
+### 8a. Write-to-freed eBPF Detection
+
+**Goal**: Detect writes to freed slab objects via `copy_from_user` kprobe — near-certain exploitability signal.
+
+**Design**: kprobe on `_copy_from_user`, cross-reference destination address with `cache_freed` LRU map (Phase 7c). Two-stage filtering: (1) address range pre-filter (slab heap only, 90%+ early exit), (2) 50ms time window + 3-execution statistical confirmation.
+
+**Overhead**: < 1.5%. **Expected impact**: Strong exploitability signal for Focus Mode prioritization.
+
+**Risk mitigation**: No additional kprobe on `kmem_cache_alloc` (overhead too high). Instead: time window (50ms) + statistical dedup (3 consecutive triggers = confirmed, 1 trigger = candidate).
+
+**Files**: `executor/ebpf/write_to_freed.bpf.c` (new), `executor/ebpf/ebpf_monitor.go`, `pkg/flatrpc/flatrpc.fbs` (+1 field), `pkg/fuzzer/fuzzer.go` (processResult)
+
+### 8b. Operator-Pair Thompson Sampling (MuoFuzz)
+
+**Goal**: Learn conditional probabilities between consecutive mutation operators — P(next_op success | prev_op).
+
+**Source**: MuoFuzz (FuzzBench/MAGMA). Extends DEzzer from 5 independent distributions to 5×5 = 25 pair distributions.
+
+**Design**: `alpha[prev_op][next_op]`, `beta[prev_op][next_op]` in DEzzer. Fallback to single-op TS when pair data < 50 records. Feature flag for on/off.
+
+**Overhead**: < 0.1% (25 floats = 200 bytes, O(1) lookup). **Expected impact**: +5-10% mutation efficiency.
+
+**Files**: `pkg/fuzzer/dezzer.go` (pair stats), `prog/mutation.go` (track prev_op in loop)
+
+### 8c. Multi-Objective Meta-Bandit (MobFuzz)
+
+**Goal**: Optimize for multiple objectives (coverage + memory_safety + priv_esc) instead of coverage alone.
+
+**Source**: MobFuzz (NDSS 2022), adapted from user-space AFL to kernel fuzzing using existing eBPF signals.
+
+**Design**: Meta-bandit architecture with independent TS per objective:
+- Layer 0: UCB-1 selects objective (coverage / memory_safety / priv_esc) per 100-execution epoch
+- Layer 1: Objective-specific operator TS (each objective has its own DEzzer weights)
+- `memory_safety_score = uaf_base * 1.0 + cross_cache * 0.5 + double_free * 0.8`
+- Dynamic coverage minimum: 70% (first 2h) → 50% (2-8h) → 30% (8h+)
+
+**Sparse reward solution**: No reward amplification. Each objective has independent TS with own reward signal (event ratio within its epoch), eliminating the rare-event problem.
+
+**AI integration**: AI strategy adjusts UCB priors (direction, not numerical hyperparameters), e.g., "increase memory_safety prior" → alpha_m += 10.
+
+**Overhead**: < 0.5%. **Expected impact**: +50-100% high-risk bug discovery. **Implementation order**: Last (after 8a/8b/8e/8f/8d stabilize).
+
+**Risk mitigation**: Maximum 3 objectives. Feature flag. Layered separation from operator TS.
+
+**Files**: `pkg/fuzzer/dezzer.go` (meta-bandit, per-objective TS), `pkg/fuzzer/fuzzer.go` (processResult routing), `pkg/aitriage/prompt_strategy.go` (objective weights in prompt)
+
+### 8d. MOCK Context-Aware Dependency (BiGRU)
+
+**Goal**: Learn syscall sequence dependencies via BiGRU language model for context-aware mutation.
+
+**Source**: MOCK (NDSS 2024). BiGRU (embed=64, hidden=128, ~1-2MB model). Trains on corpus programs that triggered new coverage. Retrains every 2 hours. Top-k=15 sampling. UCB-1 balances static vs. context-aware mutation.
+
+**Design**: Python subprocess (PyTorch) running as gRPC service. Go queries model during `insertCall()` with 50% probability (50% fallback to ChoiceTable). Health check every 5s, auto-restart on failure, fallback to existing ChoiceTable if Python down.
+
+**Overhead**: < 1% (inference < 1ms via GPU, RTX 3070 Ti). Training: ~30s every 2h (non-blocking). **Expected impact**: +3-12% coverage (paper average, not +32% maximum).
+
+**Cold start**: First hour uses static dependencies only (UCB-1 naturally handles this).
+
+**Files**: `tools/mock_model/` (new Python package), `pkg/fuzzer/ngram.go` (Go client + gRPC), `prog/mutation.go` (insertCall integration), `syz-manager/manager.go` (subprocess lifecycle)
+
+### 8e. Per-Cluster Thompson Sampling (SeamFuzz)
+
+**Goal**: Maintain separate DEzzer weights per kernel subsystem cluster.
+
+**Source**: SeamFuzz (ICSE 2023). Programs clustered by dominant syscall subsystem: fs, net, mm, ipc, device, other.
+
+**Design**: Classify program at mutation time via majority-vote over call names (O(n), < 0.001ms). No caching on `prog.Prog` (stale after mutation). DEzzer maintains per-cluster alpha/beta arrays. Fallback to global TS when cluster data < 100 records.
+
+**Overhead**: < 0.2%. **Expected impact**: +3-8% crash discovery (subsystem-specific optimization).
+
+**Files**: `pkg/fuzzer/dezzer.go` (cluster state, per-cluster weights), `pkg/fuzzer/fuzzer.go` (classifyProgram)
+
+### 8f. Effective Component Inference (lightweight SeqFuzz)
+
+**Goal**: Identify which syscalls in a program are essential for crash reproduction, focus mutation on them.
+
+**Source**: SeqFuzz (Inscrypt 2025) concept, adapted as lightweight dynamic ablation (no static ICFG analysis).
+
+**Design**: Focus job only. At focus job start: remove calls one-by-one, execute 3× each. Calls where removal prevents crash = essential. Focus mutation on essential calls (mutate_arg), replace non-essential calls (insert/splice). Skip ablation if program length < 5. Cache results per crash title.
+
+**Overhead**: 5-15 extra executions at focus job start (< 1s). **Expected impact**: 2-3x focus job efficiency.
+
+**Files**: `pkg/fuzzer/job.go` (focusJob ablation phase), `pkg/fuzzer/fuzzer.go` (ablation cache)
+
+### Phase 8 Implementation Order
+
+```
+8a (Write-to-freed) → 8b (Op-pair TS) → 8e (Cluster TS) → 8f (Effective Component) → 8d (MOCK BiGRU) → 8c (Multi-obj, last)
+```
+
+Rationale: 8a is simplest with immediate value. 8b/8e extend DEzzer incrementally. 8f enhances Focus Mode. 8d requires Python infrastructure. 8c depends on 8a providing new objective signals and all other features being stable.
+
+### Phase 8 Risk Summary
+
+| Risk | Subphase | Prob | Impact | Mitigation |
+|------|----------|------|--------|------------|
+| copy_from_user overhead | 8a | Med | Med | Address range pre-filter (slab heap only) |
+| cache_freed stale entry | 8a | High | Med | 50ms time window + 3-execution statistical confirmation |
+| Pair distribution slow convergence | 8b | Med | Low | Single-op fallback when pair data < 50 |
+| Objective conflict (coverage vs UAF) | 8c | High | High | Meta-bandit with independent TS per objective, dynamic coverage floor |
+| Sparse eBPF reward signals | 8c | High | High | Per-objective epoch ratio (eliminates amplification) |
+| DEzzer complexity explosion | 8b+c+e | Med | High | Layered separation + feature flags + incremental activation |
+| Python↔Go IPC instability | 8d | Med | High | gRPC + health check + auto-fallback to ChoiceTable |
+| Model quality = corpus quality | 8d | Med | Med | UCB-1 auto-balancing + rollback on regression |
+| Flaky crash ablation misclassification | 8f | High | Med | 3× repetition + deflake reuse |
+| Cumulative overhead | All | Med | Med | Per-feature measurement, disable if > 5% |
+
+### Phase 8 Verification
+
+Each sub-phase: `go build` + `go vet` → 1h fuzzing (exec/sec baseline) → 4h run (crash discovery comparison).
+
 ## Phase 6+: Advanced Improvements Roadmap
 
 **Full roadmap**: See `syzkaller/probe_log/improvement_roadmap.md` for detailed descriptions, paper references, and cost projections.
 
-Based on a survey of 30+ papers (CCS/NDSS/ASPLOS/USENIX 2024-2026), 39 applicable techniques were identified and prioritized into 7 phases:
+Based on a survey of 30+ papers (CCS/NDSS/ASPLOS/USENIX 2022-2026), 39 applicable techniques were identified and prioritized into 7 phases:
 
 | Phase | Focus | Timeline | Key Techniques | Expected Impact |
 |-------|-------|----------|----------------|-----------------|
 | 6 | AI Cost Optimization + Scheduling | Week 1 | Batch API, Prompt Caching, Tiered Routing, T-Scheduler, SyzMini, DEzzer | **-80% API cost**, better scheduling |
 | 7 | Core Detection Enhancement | Week 2-3 | SyzGPT (DRAG), CountDown (refcount), Cross-cache, Privilege escalation, GPTrace | **+323% vuln detection**, +66% UAF |
-| 8 | Mutation & Coverage Innovation | Week 3-4 | MOCK, SeqFuzz, MobFuzz, Coverage feedback, Write-to-freed | **+32% coverage**, 3-4.5x bugs |
+| 8 | Mutation & Coverage Innovation | Week 3-4 | Write-to-freed, Op-pair TS, Multi-obj MAB, MOCK BiGRU, Cluster TS, Effective Component | **+3-12% coverage**, 2-3x high-risk bugs |
 | 9 | Advanced Coverage & Detection | Month 2 | KBinCov, Page-level UAF, Context-sensitive, FD lifecycle, Anamnesis | **+87% binary coverage** |
 | 10 | Spec Auto-Generation | Month 2-3 | KernelGPT, SyzForge, SyzSpec | **+13-18% coverage**, new syscalls |
 | 11 | Concurrency Bugs | Month 3 | LACE, ACTOR, OZZ | **+38% coverage**, race conditions |
@@ -597,9 +714,9 @@ Based on a survey of 30+ papers (CCS/NDSS/ASPLOS/USENIX 2024-2026), 39 applicabl
 - KernelGPT/SyzForge spec generation (+$0.50-2.00/run)
 
 ### Non-cost techniques (pure code changes)
-- All scheduling improvements (T-Scheduler, DEzzer, MobFuzz)
-- All eBPF extensions (refcount, cross-cache, page-level, FD, privilege escalation)
-- Mutation improvements (MOCK, SeqFuzz, SyzMini)
+- All scheduling improvements (T-Scheduler, DEzzer, MobFuzz multi-obj)
+- All eBPF extensions (refcount, cross-cache, page-level, FD, privilege escalation, write-to-freed)
+- Mutation improvements (MOCK BiGRU, Op-pair TS, Cluster TS, Effective Component, SyzMini)
 - Coverage extensions (KBinCov, context-sensitive)
 - Concurrency testing (LACE, ACTOR)
 
@@ -609,7 +726,13 @@ Based on a survey of 30+ papers (CCS/NDSS/ASPLOS/USENIX 2024-2026), 39 applicabl
 |-------|-------|-----------|
 | SyzGPT | ISSTA 2025 | Dependency-based RAG, +323% vuln detection — Phase 7 |
 | CountDown | CCS 2024 | Refcount-guided UAF, +66.1% UAFs — Phase 7 |
-| MOCK | NDSS 2024 | Context-aware mutation, +32% coverage — Phase 8 |
+| MOCK | NDSS 2024 | Context-aware BiGRU mutation, +3-12% coverage avg — Phase 8d |
+| MuoFuzz | FuzzBench 2024 | Operator-pair sequence learning — Phase 8b |
+| MobFuzz | NDSS 2022 | Multi-objective MAB, 3x bugs (user-space, adapted) — Phase 8c |
+| SeamFuzz | ICSE 2023 | Per-cluster Thompson Sampling — Phase 8e |
+| SeqFuzz | Inscrypt 2025 | Effective component inference (lightweight adaptation) — Phase 8f |
+| SyzAgent | 2025 | LLM choice table updates — Phase 3 enhancement |
+| SyzMutateX | DMIT 2025 | LLM-driven mutation + UCB energy, +15.8% coverage — Future |
 | Snowplow | ASPLOS 2025 | ML-guided mutation (Google DeepMind), 4.8x speedup — Phase 12 |
 | KernelGPT | ASPLOS 2025 | LLM spec generation, 24 bugs, 11 CVEs — Phase 10 |
 | GPTrace | ICSE 2026 | LLM embedding crash dedup — Phase 7 |
@@ -617,8 +740,6 @@ Based on a survey of 30+ papers (CCS/NDSS/ASPLOS/USENIX 2024-2026), 39 applicabl
 | SyzMini | ATC 2025 | Minimization optimization, -60.7% cost — Phase 6 |
 | LACE | 2025 | eBPF sched_ext concurrency, +38% coverage — Phase 11 |
 | Anamnesis | 2026 | LLM exploit generation, ~$30/exploit — Phase 9 |
-| MobFuzz | NDSS 2024 | Multi-objective MAB, 3x bugs — Phase 8 |
-| SeqFuzz | Inscrypt 2025 | Effective component inference, 4.5x bugs — Phase 8 |
 | SLUBStick | USENIX Sec 2024 | Cross-cache attacks, 99% success — Phase 12 |
 | ACTOR | USENIX Sec 2023 | Concurrency testing — Phase 11 |
 | SyzScope | USENIX Sec 2022 | 15% of "low-risk" bugs are high-risk — Phase 1+2 motivation |
@@ -641,5 +762,8 @@ Based on a survey of 30+ papers (CCS/NDSS/ASPLOS/USENIX 2024-2026), 39 applicabl
 | `sys/linux/*.txt` | Syscall descriptions (syzlang) |
 | `executor/executor.cc` | In-VM syscall executor (C++) |
 | `executor/ebpf/probe_ebpf.bpf.c` | eBPF heap monitor (BPF C) |
+| `executor/ebpf/write_to_freed.bpf.c` | Write-to-freed detector (BPF C) — Phase 8a |
+| `pkg/fuzzer/dezzer.go` | DEzzer TS+DE optimizer (pair/cluster/meta-bandit) |
+| `tools/mock_model/` | MOCK BiGRU model service (Python) — Phase 8d |
 | `tools/syz-ebpf-loader/main.go` | BPF loader binary (Go) |
 | `pkg/flatrpc/flatrpc.fbs` | FlatBuffers RPC schema |
