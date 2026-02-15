@@ -1349,14 +1349,15 @@ func (t *Triager) EmbeddingCostJSON() []byte {
 		return nil
 	}
 	data, _ := json.Marshal(struct {
-		TotalCalls   int     `json:"total_calls"`
-		TotalInput   int     `json:"total_input_tokens"`
-		TotalOutput  int     `json:"total_output_tokens"`
-		TotalCostUSD float64 `json:"total_cost_usd"`
-		TodayCostUSD float64 `json:"today_cost_usd"`
-		TodayCalls   int     `json:"today_calls"`
-		TodayInput   int     `json:"today_input_tokens"`
-		TodayOutput  int     `json:"today_output_tokens"`
+		TotalCalls   int       `json:"total_calls"`
+		TotalInput   int       `json:"total_input_tokens"`
+		TotalOutput  int       `json:"total_output_tokens"`
+		TotalCostUSD float64   `json:"total_cost_usd"`
+		TodayCostUSD float64   `json:"today_cost_usd"`
+		TodayCalls   int       `json:"today_calls"`
+		TodayInput   int       `json:"today_input_tokens"`
+		TodayOutput  int       `json:"today_output_tokens"`
+		History      []APICall `json:"history"`
 	}{
 		TotalCalls:   snap.TotalCalls,
 		TotalInput:   snap.TotalInput,
@@ -1366,6 +1367,7 @@ func (t *Triager) EmbeddingCostJSON() []byte {
 		TodayCalls:   snap.TodayCalls,
 		TodayInput:   snap.TodayInput,
 		TodayOutput:  snap.TodayOutput,
+		History:      snap.History,
 	})
 	return data
 }

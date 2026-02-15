@@ -104,30 +104,61 @@ PROBE: AI Triage page — crash analysis, strategy, SyzGPT, action buttons, filt
 
 {{if .History}}
 <br>
-<table class="list_table">
-<caption>API Call History (last {{len .History}}):</caption>
+<table class="list_table" id="historyTable">
+<caption>API Call History ({{len .History}} total):</caption>
 <thead><tr>
-	<th><a onclick="return sortTable(this, 'Time', textSort)" href="#">Time</a></th>
+	<th>Time</th>
 	<th>Type</th>
 	<th>Tokens (in/out)</th>
-	<th><a onclick="return sortTable(this, 'Cost', floatSort)" href="#">Cost</a></th>
+	<th>Cost</th>
 	<th>Result</th>
 </tr></thead>
 <tbody>
-{{range .History}}
-<tr>
-	<td class="time">{{formatTime .Time}}</td>
-	<td>{{.Type}}</td>
-	<td class="stat">{{.Input}}/{{.Output}}</td>
-	<td class="stat">${{printf "%.3f" .CostUSD}}</td>
-	<td>{{if .Success}}{{.ResultSummary}}{{else}}<span style="color:red">{{.Error}}</span>{{end}}</td>
+{{range $i, $h := .History}}
+<tr class="history-row" data-idx="{{$i}}">
+	<td class="time">{{formatTime $h.Time}}</td>
+	<td>{{$h.Type}}</td>
+	<td class="stat">{{$h.Input}}/{{$h.Output}}</td>
+	<td class="stat">${{printf "%.3f" $h.CostUSD}}</td>
+	<td>{{if $h.Success}}{{$h.ResultSummary}}{{else}}<span style="color:red">{{$h.Error}}</span>{{end}}</td>
 </tr>
 {{end}}
 </tbody>
 </table>
+<div id="historyPager" style="margin:8px 0; display:flex; gap:6px; align-items:center; font-size:13px;"></div>
 {{end}}
 
 <script>
+// Pagination for history table.
+(function() {
+	var PAGE_SIZE = 10;
+	var rows = document.querySelectorAll('.history-row');
+	if (!rows.length) return;
+	var total = rows.length;
+	var pages = Math.ceil(total / PAGE_SIZE);
+	var cur = 0;
+	function show(page) {
+		cur = page;
+		for (var i = 0; i < total; i++) {
+			rows[i].style.display = (i >= page * PAGE_SIZE && i < (page + 1) * PAGE_SIZE) ? '' : 'none';
+		}
+		render();
+	}
+	function render() {
+		var pager = document.getElementById('historyPager');
+		if (!pager) return;
+		var html = '';
+		if (pages <= 1) { pager.innerHTML = ''; return; }
+		html += '<button onclick="historyPage(0)" ' + (cur===0?'disabled':'') + '>&laquo;</button>';
+		html += '<button onclick="historyPage('+(cur-1)+')" ' + (cur===0?'disabled':'') + '>&lsaquo;</button>';
+		html += '<span>Page ' + (cur+1) + ' / ' + pages + '</span>';
+		html += '<button onclick="historyPage('+(cur+1)+')" ' + (cur>=pages-1?'disabled':'') + '>&rsaquo;</button>';
+		html += '<button onclick="historyPage('+(pages-1)+')" ' + (cur>=pages-1?'disabled':'') + '>&raquo;</button>';
+		pager.innerHTML = html;
+	}
+	window.historyPage = function(p) { if (p >= 0 && p < pages) show(p); };
+	show(0);
+})();
 // Countdown timer.
 {{if .NextBatchSec}}
 var nextBatch = {{.NextBatchSec}};

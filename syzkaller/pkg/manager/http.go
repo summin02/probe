@@ -1494,6 +1494,14 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Embedding model info.
+	type embModelProvider interface {
+		EmbeddingModel() (string, string)
+	}
+	if mp, ok := serv.Triager.(embModelProvider); ok {
+		data.EmbModel, data.EmbProvider = mp.EmbeddingModel()
+	}
+
 	// Embeddings stats.
 	type embeddingProvider interface {
 		EmbeddingsJSON() []byte
@@ -1937,6 +1945,8 @@ type UIAIPageData struct {
 	// Status.
 	Model        string
 	Provider     string
+	EmbModel     string
+	EmbProvider  string
 	Status       string
 	NextBatchSec int
 
@@ -2409,6 +2419,14 @@ func (serv *HTTPServer) httpAIEmbeddings(w http.ResponseWriter, r *http.Request)
 			TodayCalls   int     `json:"today_calls"`
 			TodayInput   int     `json:"today_input_tokens"`
 			TodayCostUSD float64 `json:"today_cost_usd"`
+			History      []struct {
+				Time        time.Time `json:"time"`
+				Type        string    `json:"type"`
+				InputTokens int       `json:"input_tokens"`
+				CostUSD     float64   `json:"cost_usd"`
+				Success     bool      `json:"success"`
+				Error       string    `json:"error"`
+			} `json:"history"`
 		}
 		if embData := ep.EmbeddingCostJSON(); embData != nil {
 			json.Unmarshal(embData, &embCost)
@@ -2421,6 +2439,19 @@ func (serv *HTTPServer) httpAIEmbeddings(w http.ResponseWriter, r *http.Request)
 		data.TotalTokens = formatTokens(embCost.TotalInput)
 		data.TotalCostUSD = embCost.TotalCostUSD
 		data.TotalCostKRW = int(embCost.TotalCostUSD * 1450)
+
+		// API Call History (most recent first).
+		for i := len(embCost.History) - 1; i >= 0; i-- {
+			h := embCost.History[i]
+			data.History = append(data.History, UIAPICall{
+				Time:    h.Time,
+				Type:    h.Type,
+				Input:   h.InputTokens,
+				CostUSD: h.CostUSD,
+				Success: h.Success,
+				Error:   h.Error,
+			})
+		}
 	}
 
 	// Embedding + cluster data.
@@ -2449,6 +2480,9 @@ func (serv *HTTPServer) httpAIEmbeddings(w http.ResponseWriter, r *http.Request)
 
 		data.TotalEmbeddings = len(ed.Embeddings)
 		data.TotalClusters = len(ed.Clusters)
+		if len(ed.Embeddings) > 0 && len(ed.Clusters) > 0 {
+			data.DedupRatio = (1.0 - float64(len(ed.Clusters))/float64(len(ed.Embeddings))) * 100
+		}
 
 		for _, emb := range ed.Embeddings {
 			data.CrashClusters = append(data.CrashClusters, UICrashClusterRow{
@@ -2800,8 +2834,14 @@ type UIAIEmbeddingsData struct {
 	TotalCostUSD float64
 	TotalCostKRW int
 
+	// Dedup summary.
+	DedupRatio float64 // percentage of crashes deduped
+
 	Clusters      []UIClusterRow
 	CrashClusters []UICrashClusterRow
+
+	// API Call History.
+	History []UIAPICall
 }
 
 type UIClusterRow struct {

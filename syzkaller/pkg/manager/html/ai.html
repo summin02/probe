@@ -13,9 +13,6 @@ PROBE: AI Dashboard — summary overview with costs and full console.
 .card h3 { margin: 0 0 6px 0; font-size: 12px; color: #666; text-transform: uppercase; }
 .card .value { font-size: 22px; font-weight: bold; }
 .card .sub { font-size: 11px; color: #999; margin-top: 2px; }
-.quick-links { display: flex; gap: 12px; margin: 16px 0; flex-wrap: wrap; }
-.quick-links a { padding: 8px 20px; border: 1px solid #1a73e8; border-radius: 6px; text-decoration: none; color: #1a73e8; font-weight: 500; }
-.quick-links a:hover { background: #e8f0fe; }
 </style>
 
 <div class="tab-nav">
@@ -31,7 +28,8 @@ PROBE: AI Dashboard — summary overview with costs and full console.
 
 <table class="list_table">
 <caption>AI Status:</caption>
-<tr><td class="title">Model</td><td>{{.Model}} ({{.Provider}})</td></tr>
+<tr><td class="title">LLM</td><td>{{.Model}} ({{.Provider}})</td></tr>
+{{if .EmbModel}}<tr><td class="title">Embedding</td><td>{{.EmbModel}} ({{.EmbProvider}})</td></tr>{{end}}
 <tr><td class="title">Status</td><td><span id="ai-status">{{.Status}}</span>{{if .NextBatchSec}} | Next batch: <span id="countdown"></span>{{end}}</td></tr>
 </table>
 
@@ -93,13 +91,6 @@ PROBE: AI Dashboard — summary overview with costs and full console.
 <tr><td class="title">Total</td><td>${{printf "%.4f" .CombinedTotalCostUSD}} (~{{.CombinedTotalCostKRW}} KRW)</td></tr>
 </table>
 {{end}}
-
-<br>
-<div class="quick-links">
-  <a href="/ai/triage">Triage &amp; Strategy &rarr;</a>
-  <a href="/ai/embeddings">Embeddings &rarr;</a>
-  <a href="/ai/analytics">Analytics &rarr;</a>
-</div>
 
 <br>
 <b>Console (All)</b>
