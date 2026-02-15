@@ -37,7 +37,7 @@ type Fuzzer struct {
 
 	ct           *prog.ChoiceTable
 	ctProgs      int
-	ctMu         sync.Mutex // TODO: use RWLock.
+	ctMu         sync.RWMutex
 	ctRegenerate chan struct{}
 
 	// PROBE: Focus Mode state.
@@ -217,29 +217,25 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 		if res.Info.EbpfSizeMismatchCount > 0 {
 			fuzzer.statEbpfSizeMismatch.Add(int(res.Info.EbpfSizeMismatchCount))
 		}
-		// Double-free: always trigger Focus (cooldown via title dedup)
-		if res.Info.EbpfDoubleFreeCount > 0 && res.Status != queue.Hanged {
+		// Cooldown check shared by double-free and UAF focus triggers.
+		fuzzer.focusMu.Lock()
+		ebpfCooldownOk := time.Since(fuzzer.lastEbpfFocus) >= 5*time.Minute
+		fuzzer.focusMu.Unlock()
+
+		// Double-free: trigger Focus (with cooldown to prevent over-triggering).
+		if res.Info.EbpfDoubleFreeCount > 0 && res.Status != queue.Hanged && ebpfCooldownOk {
 			fuzzer.Logf(0, "PROBE: eBPF detected DOUBLE-FREE (count=%d) in %s",
 				res.Info.EbpfDoubleFreeCount, req.Prog)
 			fuzzer.AddFocusCandidate(req.Prog,
 				fmt.Sprintf("PROBE:ebpf-double-free:%s", req.Prog.String()), 1)
 		}
 		// Non-crashing UAF detection: high UAF score without crash → UAF-favorable pattern.
-		if res.Info.EbpfUafScore >= 70 && res.Status != queue.Hanged {
+		if res.Info.EbpfUafScore >= 70 && res.Status != queue.Hanged && ebpfCooldownOk {
 			fuzzer.statEbpfUafDetected.Add(1)
-			// Cooldown: only trigger eBPF focus at most once per 5 minutes.
-			fuzzer.focusMu.Lock()
-			elapsed := time.Since(fuzzer.lastEbpfFocus)
-			fuzzer.focusMu.Unlock()
-			if elapsed >= 5*time.Minute {
-				fuzzer.Logf(0, "PROBE: eBPF detected UAF-favorable pattern (score=%d, reuse=%d, rapid=%d) in %s",
-					res.Info.EbpfUafScore, res.Info.EbpfReuseCount,
-					res.Info.EbpfRapidReuseCount, req.Prog)
-				fuzzer.AddFocusCandidate(req.Prog, fmt.Sprintf("PROBE:ebpf-uaf:%s", req.Prog.String()), 1)
-				fuzzer.focusMu.Lock()
-				fuzzer.lastEbpfFocus = time.Now()
-				fuzzer.focusMu.Unlock()
-			}
+			fuzzer.Logf(0, "PROBE: eBPF detected UAF-favorable pattern (score=%d, reuse=%d, rapid=%d) in %s",
+				res.Info.EbpfUafScore, res.Info.EbpfReuseCount,
+				res.Info.EbpfRapidReuseCount, req.Prog)
+			fuzzer.AddFocusCandidate(req.Prog, fmt.Sprintf("PROBE:ebpf-uaf:%s", req.Prog.String()), 1)
 		}
 	}
 
@@ -467,6 +463,7 @@ func (fuzzer *Fuzzer) AddFocusCandidate(p *prog.Prog, title string, tier int) bo
 		return false
 	}
 
+	fuzzer.lastEbpfFocus = time.Now()
 	fuzzer.launchFocusJob(p, title, tier)
 
 	// PROBE: Also run fault injection on crash program's calls.
@@ -486,6 +483,11 @@ func (fuzzer *Fuzzer) AddFocusCandidate(p *prog.Prog, title string, tier int) bo
 
 // launchFocusJob starts a focus job (caller must hold focusMu).
 func (fuzzer *Fuzzer) launchFocusJob(p *prog.Prog, title string, tier int) {
+	// Prevent unbounded memory growth in long runs: if too many titles accumulated,
+	// reset the dedup set (allows re-focusing old titles, which is acceptable).
+	if len(fuzzer.focusTitles) > 10000 {
+		fuzzer.focusTitles = map[string]bool{}
+	}
 	fuzzer.focusTitles[title] = true
 	fuzzer.focusActive = true
 	fuzzer.focusTarget = title
@@ -509,10 +511,18 @@ func (fuzzer *Fuzzer) launchFocusJob(p *prog.Prog, title string, tier int) {
 }
 
 // drainFocusPending launches the next queued focus candidate if any.
-// Called when a focus job completes.
+// Called when a focus job completes. Enforces a 2-minute cooldown between
+// consecutive focus jobs to prevent resource starvation from over-triggering.
 func (fuzzer *Fuzzer) drainFocusPending() {
 	fuzzer.focusMu.Lock()
 	defer fuzzer.focusMu.Unlock()
+
+	// Enforce cooldown between focus jobs (prevents back-to-back monopolization).
+	if time.Since(fuzzer.lastEbpfFocus) < 2*time.Minute {
+		// Clear stale pending to prevent unbounded growth.
+		fuzzer.focusPending = nil
+		return
+	}
 
 	for len(fuzzer.focusPending) > 0 {
 		c := fuzzer.focusPending[0]
@@ -521,6 +531,7 @@ func (fuzzer *Fuzzer) drainFocusPending() {
 			continue // already focused
 		}
 		fuzzer.launchFocusJob(c.prog, c.title, c.tier)
+		fuzzer.lastEbpfFocus = time.Now()
 		fuzzer.Logf(0, "PROBE: focus dequeued '%v' (remaining: %d)", c.title, len(fuzzer.focusPending))
 		return
 	}
@@ -557,8 +568,8 @@ func (fuzzer *Fuzzer) choiceTableUpdater() {
 func (fuzzer *Fuzzer) ChoiceTable() *prog.ChoiceTable {
 	progs := fuzzer.Config.Corpus.Programs()
 
-	fuzzer.ctMu.Lock()
-	defer fuzzer.ctMu.Unlock()
+	fuzzer.ctMu.RLock()
+	defer fuzzer.ctMu.RUnlock()
 
 	// There were no deep ideas nor any calculations behind these numbers.
 	regenerateEveryProgs := 333
@@ -615,31 +626,32 @@ func (fuzzer *Fuzzer) ApplyAIWeights(weights map[int]float64) {
 
 // PROBE: InjectProgram injects an already-parsed program as a triage candidate.
 // Used by AI seed hints to inject corpus programs matching requested syscall combinations.
+// Note: does NOT use progCandidate flag — AI injections are not counted in CandidatesToTriage()
+// to avoid interfering with corpus triage completion detection.
 func (fuzzer *Fuzzer) InjectProgram(p *prog.Prog) {
-	fuzzer.statCandidates.Add(1)
 	req := &queue.Request{
 		Prog:      p.Clone(),
 		ExecOpts:  setFlags(flatrpc.ExecFlagCollectSignal),
 		Stat:      fuzzer.statExecCandidate,
 		Important: true,
 	}
-	fuzzer.enqueue(fuzzer.candidateQueue, req, ProgMinimized|ProgSmashed|progCandidate, 0)
+	fuzzer.enqueue(fuzzer.candidateQueue, req, ProgMinimized|ProgSmashed, 0)
 }
 
 // PROBE: InjectSeed parses a syzkaller-format program text and injects it as a triage candidate.
+// Note: does NOT use progCandidate flag — AI seeds are not counted in CandidatesToTriage().
 func (fuzzer *Fuzzer) InjectSeed(progText string) error {
 	p, err := fuzzer.target.Deserialize([]byte(progText), prog.NonStrict)
 	if err != nil {
 		return err
 	}
-	fuzzer.statCandidates.Add(1)
 	req := &queue.Request{
 		Prog:      p,
 		ExecOpts:  setFlags(flatrpc.ExecFlagCollectSignal),
 		Stat:      fuzzer.statExecCandidate,
 		Important: true,
 	}
-	fuzzer.enqueue(fuzzer.candidateQueue, req, ProgMinimized|ProgSmashed|progCandidate, 0)
+	fuzzer.enqueue(fuzzer.candidateQueue, req, ProgMinimized|ProgSmashed, 0)
 	return nil
 }
 
