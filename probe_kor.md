@@ -201,12 +201,15 @@
 - `pkg/fuzzer/fuzzer.go`: `ApplyAIWeights()` — ChoiceTable에 가중치 전달
 - Focus 타겟 → 고점수 크래시에 `AddFocusCandidate()` 호출
 
-**대시보드**:
+**대시보드** (4탭 레이아웃):
 - `main.html`: 크래시 테이블에 AI Score 컬럼 (색상 코딩: 빨강 70+, 노랑 40-69, 초록 0-39)
 - `crash.html`: AI 익스플로잇 분석 섹션 (점수, 클래스, 취약점 유형)
-- `ai.html`: `/ai` 페이지 — 상태, 비용 추적 (USD+KRW), 크래시 분석 테이블, 전략 상세, API 호출 히스토리, 수동 트리거 버튼; LLM 배치 완료 시 자동 새로고침
-- `aianalytics.html`: `/ai/analytics` 페이지 — Google Charts 종합 분석 (일별 비용 bar, 비용 비율 pie, 누적 비용 line, 점수 분포, exploit class pie, 일별 호출 수), 토큰 효율, 취약점 유형, 전략 실행, API 에러 데이터 테이블
-- `common.html`: 네비게이션 바에 AI 탭 추가
+- `ai.html`: `/ai` (Dashboard 탭) — 요약 카드 (분석됨, 고위험, 대기, 클러스터, SyzGPT), 3분할 비용 테이블 (Claude LLM / GPT Embedding / 합산), 바로가기 링크, 전체 콘솔 실시간 폴링
+- `aitriage.html`: `/ai/triage` (AI Triage 탭) — 액션 버튼 (Analyze/Strategize), 크래시 익스플로잇 테이블, 전략 상세, API 호출 히스토리, 필터 콘솔 (`[Step A/B/C]`)
+- `aiembeddings.html`: `/ai/embeddings` (Embeddings 탭) — Embed Now 버튼, 요약 카드, 클러스터/임베딩 테이블, 필터 콘솔 (`[Embeddings]`)
+- `aianalytics.html`: `/ai/analytics` (Analytics 탭) — Google Charts (비용, 점수, exploit class, API 호출, 크래시 타임라인), 비용 효율 지표, SyzGPT 성능, 임베딩 분석
+- `aicrash.html`: `/ai/crash?id=` — 개별 크래시 상세 분석 (뒤로가기 → `/ai/triage`)
+- `common.html`: 네비게이션 바 AI 탭 (`hasPrefix`로 하위 경로 하이라이팅)
 
 **매니저 통합** (`syz-manager/ai_triage.go`):
 - Config에서 Triager 초기화, 백그라운드 고루틴 실행

@@ -18,14 +18,27 @@ table.bordered th { background: #f5f5f5; }
 </style>
 
 <div class="tab-nav">
-  <a href="/ai">AI Dashboard</a>
-  <a href="/ai/analytics">Analytics</a>
+  <a href="/ai">Dashboard</a>
+  <a href="/ai/triage">AI Triage</a>
   <a href="/ai/embeddings" class="active">Embeddings</a>
+  <a href="/ai/analytics">Analytics</a>
 </div>
 
 {{if .Disabled}}
 <p>Embedding-based dedup is not configured. Set <code>embedding_api_key</code> and <code>embedding_model</code> in the <code>ai_triage</code> config block.</p>
 {{else}}
+
+<table class="list_table" style="width:auto">
+<caption>Actions:</caption>
+<tr>
+	<td class="title" style="vertical-align:top">Crash Embeddings</td>
+	<td>
+		<button id="embedBtn" onclick="triggerEmbed()">Embed Now</button>
+		<span style="color:#888; font-size:12px; margin-left:6px">GPT embeds each crash report into a vector for semantic clustering</span>
+	</td>
+</tr>
+</table>
+<br>
 
 <div class="summary-cards">
   <div class="card">
@@ -62,6 +75,10 @@ table.bordered th { background: #f5f5f5; }
   </div>
 </div>
 
+<b>Console (Embeddings)</b>
+<div id="console" style="background:#1e1e1e; color:#d4d4d4; font-family:'Consolas','Courier New',monospace; font-size:12px; padding:10px; height:180px; overflow-y:auto; border:1px solid #555; border-radius:4px; margin-bottom:16px; white-space:pre-wrap;">Waiting for embedding activity...
+</div>
+
 <h2>Crash Clusters</h2>
 {{if .Clusters}}
 <table class="bordered">
@@ -96,5 +113,80 @@ table.bordered th { background: #f5f5f5; }
 {{else}}
 <p>No embeddings yet.</p>
 {{end}}
+
+<script>
+var lastLogLen = 0;
+var wasRunning = false;
+var pollInterval = null;
+
+function triggerEmbed() {
+	var btn = document.getElementById('embedBtn');
+	btn.disabled = true;
+	btn.textContent = 'Embedding...';
+	fetch('/api/ai/embed', {method: 'POST'}).then(function() {
+		pollLog();
+	}).catch(function(err) {
+		alert('Error: ' + err);
+		btn.disabled = false;
+		btn.textContent = 'Embed Now';
+	});
+}
+
+function pollLog() {
+	fetch('/api/ai/log?filter=embeddings').then(function(r) { return r.json(); }).then(function(data) {
+		var c = document.getElementById('console');
+		if (!c) return;
+		if (data.lines && data.lines.length > lastLogLen) {
+			for (var i = lastLogLen; i < data.lines.length; i++) {
+				var entry = data.lines[i];
+				var t = new Date(entry.time);
+				var ts = t.toLocaleTimeString('en-GB', {hour12: false});
+				c.textContent += '[' + ts + '] ' + entry.message + '\n';
+			}
+			lastLogLen = data.lines.length;
+			c.scrollTop = c.scrollHeight;
+		}
+		if (data.running) {
+			wasRunning = true;
+			var btn = document.getElementById('embedBtn');
+			if (btn) { btn.disabled = true; btn.textContent = 'Embedding...'; }
+			if (pollInterval) clearTimeout(pollInterval);
+			pollInterval = setTimeout(pollLog, 1500);
+		} else {
+			var btn = document.getElementById('embedBtn');
+			if (btn) { btn.disabled = false; btn.textContent = 'Embed Now'; }
+			if (wasRunning) {
+				wasRunning = false;
+				setTimeout(function() { location.reload(); }, 1500);
+				return;
+			}
+			if (pollInterval) clearTimeout(pollInterval);
+			pollInterval = setTimeout(pollLog, 5000);
+		}
+	}).catch(function() {
+		if (pollInterval) clearTimeout(pollInterval);
+		pollInterval = setTimeout(pollLog, 3000);
+	});
+}
+
+// Initial load.
+(function() {
+	fetch('/api/ai/log?filter=embeddings').then(function(r) { return r.json(); }).then(function(data) {
+		var c = document.getElementById('console');
+		if (!c || !data.lines || data.lines.length === 0) return;
+		c.textContent = '';
+		for (var i = 0; i < data.lines.length; i++) {
+			var entry = data.lines[i];
+			var t = new Date(entry.time);
+			var ts = t.toLocaleTimeString('en-GB', {hour12: false});
+			c.textContent += '[' + ts + '] ' + entry.message + '\n';
+		}
+		lastLogLen = data.lines.length;
+		c.scrollTop = c.scrollHeight;
+		if (data.running) { wasRunning = true; }
+		pollLog();
+	});
+})();
+</script>
 
 {{end}}

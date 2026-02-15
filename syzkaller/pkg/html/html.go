@@ -70,6 +70,7 @@ var Funcs = template.FuncMap{
 	"selectBisect":           selectBisect,
 	"dereference":            dereferencePointer,
 	"commitLink":             commitLink,
+	"hasPrefix":              strings.HasPrefix,
 }
 
 func selectBisect(rep *dashapi.BugReport) *dashapi.BisectResult {

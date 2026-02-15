@@ -202,12 +202,15 @@ Provider auto-detected from model name (`claude-*` → Anthropic, otherwise → 
 - `pkg/fuzzer/fuzzer.go`: `ApplyAIWeights()` — forward weights to ChoiceTable
 - Focus targets → `AddFocusCandidate()` for high-score crashes
 
-**Dashboard**:
+**Dashboard** (4-tab layout):
 - `main.html`: AI Score column on crash table (color-coded: red 70+, yellow 40-69, green 0-39)
 - `crash.html`: AI Exploitability Analysis section (score, class, vuln type)
-- `ai.html`: `/ai` page — status, cost tracking (USD+KRW), crash analysis table, strategy details, API call history, manual trigger buttons; auto-refreshes when LLM batch completes
-- `aianalytics.html`: `/ai/analytics` page — comprehensive analytics with Google Charts (daily cost bar, cost breakdown pie, cumulative cost line, score distribution, exploit class pie, API calls per day), data tables for token efficiency, vulnerability types, strategy runs
-- `common.html`: AI tab in navigation bar
+- `ai.html`: `/ai` (Dashboard tab) — summary cards (analyzed, high-risk, pending, clusters, SyzGPT), 3-way cost table (Claude LLM / GPT Embedding / Combined), quick links, full console with real-time polling
+- `aitriage.html`: `/ai/triage` (AI Triage tab) — action buttons (Analyze/Strategize), crash exploitability table, strategy details, API call history, filtered console (`[Step A/B/C]`)
+- `aiembeddings.html`: `/ai/embeddings` (Embeddings tab) — Embed Now button, summary cards, cluster/embedding tables, filtered console (`[Embeddings]`)
+- `aianalytics.html`: `/ai/analytics` (Analytics tab) — Google Charts (cost, score, exploit class, API calls, crash timeline), cost efficiency metrics, SyzGPT performance, embedding analytics
+- `aicrash.html`: `/ai/crash?id=` — detailed single crash analysis (back link → `/ai/triage`)
+- `common.html`: AI tab in navigation bar (uses `hasPrefix` for sub-path highlighting)
 
 **Manager integration** (`syz-manager/ai_triage.go`):
 - Triager initialization from config, background goroutine

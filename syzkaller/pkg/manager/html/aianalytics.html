@@ -9,6 +9,9 @@ PROBE: AI Analytics dashboard page (Phase 3).
 {{else}}
 
 <style>
+.tab-nav { display: flex; gap: 8px; margin-bottom: 16px; }
+.tab-nav a { padding: 6px 16px; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; color: #333; }
+.tab-nav a.active { background: #1a73e8; color: #fff; border-color: #1a73e8; }
 .analytics-cards {
 	display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px;
 }
@@ -26,7 +29,12 @@ PROBE: AI Analytics dashboard page (Phase 3).
 .section-title:first-of-type { margin-top: 12px; }
 </style>
 
-<p><a href="/ai">&larr; Back to AI Dashboard</a></p>
+<div class="tab-nav">
+  <a href="/ai">Dashboard</a>
+  <a href="/ai/triage">AI Triage</a>
+  <a href="/ai/embeddings">Embeddings</a>
+  <a href="/ai/analytics" class="active">Analytics</a>
+</div>
 
 <div class="analytics-cards">
 	<div class="analytics-card">
@@ -68,6 +76,16 @@ PROBE: AI Analytics dashboard page (Phase 3).
 <div class="chart-row">
 	<div class="chart-box"><div id="chart_cumulative" style="height:280px"></div></div>
 </div>
+
+{{if or .CostPerCrash .CostPerDay}}
+<table class="list_table" style="width:auto">
+<caption>Cost Efficiency:</caption>
+<tr><td class="title">Cost per Crash</td><td>${{printf "%.4f" .CostPerCrash}}</td></tr>
+<tr><td class="title">Cost per High-Risk</td><td>${{printf "%.4f" .CostPerHighRisk}}</td></tr>
+<tr><td class="title">Avg Cost per Day</td><td>${{printf "%.4f" .CostPerDay}}</td></tr>
+</table>
+{{end}}
+
 {{if .TokenEfficiency}}
 <table class="list_table" style="width:auto">
 <caption>Token Efficiency (avg per call):</caption>
@@ -105,7 +123,7 @@ PROBE: AI Analytics dashboard page (Phase 3).
 </table>
 {{end}}
 
-<div class="section-title">3. Strategy Effectiveness</div>
+<div class="section-title">3. Strategy &amp; SyzGPT</div>
 <table class="list_table" style="width:auto">
 <caption>Strategy Summary:</caption>
 <tr><td class="title">Seeds Injected</td><td>{{.TotalSeedsInjected}}</td></tr>
@@ -113,6 +131,15 @@ PROBE: AI Analytics dashboard page (Phase 3).
 <tr><td class="title">Weights Applied</td><td>{{.TotalWeightsApplied}} / {{.TotalWeightsTotal}}</td></tr>
 <tr><td class="title">Focus Targets</td><td>{{.FocusTriggered}}</td></tr>
 </table>
+{{if .SyzGPTGenerated}}
+<br>
+<table class="list_table" style="width:auto">
+<caption>SyzGPT Performance:</caption>
+<tr><td class="title">Generated</td><td>{{.SyzGPTGenerated}} programs</td></tr>
+<tr><td class="title">Valid</td><td>{{.SyzGPTValid}} ({{.SyzGPTValidRate}}%)</td></tr>
+<tr><td class="title">Injected</td><td>{{.SyzGPTInjected}}</td></tr>
+</table>
+{{end}}
 {{if .StrategyRuns}}
 <br>
 <table class="list_table" style="width:auto">
@@ -160,6 +187,20 @@ PROBE: AI Analytics dashboard page (Phase 3).
 </table>
 {{end}}
 
+<div class="section-title">5. Crash Timeline</div>
+<div class="chart-row">
+	<div class="chart-box"><div id="chart_crash_timeline" style="height:300px"></div></div>
+</div>
+
+<div class="section-title">6. Embedding Analytics</div>
+<table class="list_table" style="width:auto">
+<caption>Embedding Overview:</caption>
+<tr><td class="title">Embedding Cost</td><td>${{printf "%.4f" .EmbCostUSD}}</td></tr>
+<tr><td class="title">Clusters</td><td>{{.EmbClusters}}</td></tr>
+<tr><td class="title">Dedup Ratio</td><td>{{printf "%.1f" .DedupRatio}}%</td></tr>
+<tr><td class="title">Combined Cost (LLM + Embedding)</td><td>${{printf "%.4f" .CombinedCostUSD}} (~{{.CombinedCostKRW}} KRW)</td></tr>
+</table>
+
 <script src="https://www.gstatic.com/charts/loader.js"></script>
 <script>
 google.charts.load('current', {packages: ['corechart']});
@@ -172,6 +213,7 @@ function drawAllCharts() {
 	drawScoreDist();
 	drawExploitClass();
 	drawCallsPerDay();
+	drawCrashTimeline();
 }
 
 function drawDailyCost() {
@@ -264,6 +306,24 @@ function drawCallsPerDay() {
 	new google.visualization.ColumnChart(document.getElementById('chart_calls_per_day')).draw(dt, {
 		title: 'API Calls per Day', isStacked: true,
 		colors: ['#4285f4', '#fbbc04'],
+		legend: {position: 'top'},
+		chartArea: {width: '85%', height: '70%'},
+		vAxis: {minValue: 0}
+	});
+}
+
+function drawCrashTimeline() {
+	var raw = {{.CrashTimelineJSON}};
+	if (!raw || raw.length === 0) return;
+	var dt = new google.visualization.DataTable();
+	dt.addColumn('string', 'Time');
+	dt.addColumn('number', 'High (>=70)');
+	dt.addColumn('number', 'Medium (40-69)');
+	dt.addColumn('number', 'Low (<40)');
+	dt.addRows(raw);
+	new google.visualization.ColumnChart(document.getElementById('chart_crash_timeline')).draw(dt, {
+		title: 'Crash Discovery Timeline', isStacked: true,
+		colors: ['#ea4335', '#fbbc04', '#34a853'],
 		legend: {position: 'top'},
 		chartArea: {width: '85%', height: '70%'},
 		vAxis: {minValue: 0}

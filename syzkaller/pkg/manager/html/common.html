@@ -53,7 +53,7 @@ Use of this source code is governed by Apache 2 LICENSE that can be found in the
 			<div class="navigation_tab{{if eq .URLPath "/config"}}_selected{{end}}">
 				<a href='/config'>🔧 config</a>
 			</div>
-			<div class="navigation_tab{{if eq .URLPath "/ai"}}_selected{{end}}">
+			<div class="navigation_tab{{if hasPrefix .URLPath "/ai"}}_selected{{end}}">
 				<a href='/ai'>🧪 AI</a>
 			</div>
 		</div>

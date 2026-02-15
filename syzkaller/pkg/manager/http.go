@@ -89,10 +89,12 @@ func (serv *HTTPServer) Serve(ctx context.Context) error {
 	handle("/ai", serv.httpAI)                        // PROBE: AI dashboard
 	handle("/ai/analytics", serv.httpAIAnalytics)    // PROBE: AI analytics
 	handle("/ai/embeddings", serv.httpAIEmbeddings) // PROBE: AI embeddings dashboard
+	handle("/ai/triage", serv.httpAITriage)          // PROBE: AI triage
 	handle("/ai/crash", serv.httpAICrash)             // PROBE: AI crash detail
 	handle("/api/ai/analyze", serv.httpAIAnalyze)     // PROBE: manual Step A
 	handle("/api/ai/log", serv.httpAILog)             // PROBE: console log stream
 	handle("/api/ai/strategize", serv.httpAIStrategize) // PROBE: manual Step B
+	handle("/api/ai/embed", serv.httpAIEmbed)            // PROBE: manual embeddings
 	handle("/config", serv.httpConfig)
 	handle("/corpus", serv.httpCorpus)
 	handle("/corpus.db", serv.httpDownloadCorpus)
@@ -1368,42 +1370,7 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use type assertion to access triager methods.
-	// We use a simple struct-based approach since we know the concrete type's methods.
-	type triagerInfo interface {
-		IsRunning() bool
-		Model() string
-		Provider() string
-	}
-	type costInfo struct {
-		TotalCalls   int
-		TotalInput   int
-		TotalOutput  int
-		TotalCostUSD float64
-		TodayCostUSD float64
-		TodayCalls   int
-		TodayInput   int
-		TodayOutput  int
-		History      []struct {
-			Time          time.Time
-			Type          string
-			InputTokens   int
-			OutputTokens  int
-			CostUSD       float64
-			Success       bool
-			ResultSummary string
-			Error         string
-		}
-	}
-
-	// Access via reflection-free JSON round-trip approach.
-	triagerJSON, _ := json.Marshal(serv.Triager)
-	_ = triagerJSON
-
-	// For now, just show basic info from the Triager's exported methods via interface.
-	// The concrete type will be *aitriage.Triager, so we pull data via its methods
-	// which are called from the manager's ai_triage.go integration file.
-	// Check if triager is currently running + next batch countdown.
+	// Status.
 	type triagerStatus interface {
 		IsRunning() bool
 		NextBatchSec() int
@@ -1417,10 +1384,189 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 		data.NextBatchSec = t.NextBatchSec()
 	} else {
 		data.Status = "Active"
-		data.NextBatchSec = 0
 	}
 
-	// Load crash analyses from disk (skip syzkaller-internal crashes).
+	// Model/provider info.
+	data.Model = serv.Cfg.AITriage.Model
+	data.Provider = serv.Cfg.AITriage.Provider
+	if data.Provider == "" {
+		if strings.HasPrefix(data.Model, "claude-") {
+			data.Provider = "anthropic"
+		} else {
+			data.Provider = "openai"
+		}
+	}
+
+	// Claude LLM cost.
+	type costProvider interface {
+		CostJSON() []byte
+	}
+	if cp, ok := serv.Triager.(costProvider); ok {
+		var cost struct {
+			TotalCalls   int     `json:"total_calls"`
+			TotalInput   int     `json:"total_input_tokens"`
+			TotalOutput  int     `json:"total_output_tokens"`
+			TotalCostUSD float64 `json:"total_cost_usd"`
+			TodayCostUSD float64 `json:"today_cost_usd"`
+			TodayCalls   int     `json:"today_calls"`
+			TodayInput   int     `json:"today_input_tokens"`
+			TodayOutput  int     `json:"today_output_tokens"`
+		}
+		if costData := cp.CostJSON(); costData != nil {
+			if json.Unmarshal(costData, &cost) == nil {
+				data.TotalCalls = cost.TotalCalls
+				data.TotalTokens = formatTokens(cost.TotalInput + cost.TotalOutput)
+				data.TotalCostUSD = cost.TotalCostUSD
+				data.TotalCostKRW = int(cost.TotalCostUSD * 1450)
+				data.TodayCalls = cost.TodayCalls
+				data.TodayTokens = formatTokens(cost.TodayInput + cost.TodayOutput)
+				data.TodayCostUSD = cost.TodayCostUSD
+				data.TodayCostKRW = int(cost.TodayCostUSD * 1450)
+			}
+		}
+	}
+
+	// GPT Embedding cost.
+	type embCostProvider interface {
+		EmbeddingCostJSON() []byte
+	}
+	if ep, ok := serv.Triager.(embCostProvider); ok {
+		var embCost struct {
+			TotalCalls   int     `json:"total_calls"`
+			TotalInput   int     `json:"total_input_tokens"`
+			TotalOutput  int     `json:"total_output_tokens"`
+			TotalCostUSD float64 `json:"total_cost_usd"`
+			TodayCostUSD float64 `json:"today_cost_usd"`
+			TodayCalls   int     `json:"today_calls"`
+			TodayInput   int     `json:"today_input_tokens"`
+			TodayOutput  int     `json:"today_output_tokens"`
+		}
+		if embData := ep.EmbeddingCostJSON(); embData != nil {
+			if json.Unmarshal(embData, &embCost) == nil {
+				data.EmbEnabled = true
+				data.EmbTodayCalls = embCost.TodayCalls
+				data.EmbTodayTokens = formatTokens(embCost.TodayInput + embCost.TodayOutput)
+				data.EmbTodayCostUSD = embCost.TodayCostUSD
+				data.EmbTodayCostKRW = int(embCost.TodayCostUSD * 1450)
+				data.EmbTotalCalls = embCost.TotalCalls
+				data.EmbTotalTokens = formatTokens(embCost.TotalInput + embCost.TotalOutput)
+				data.EmbTotalCostUSD = embCost.TotalCostUSD
+				data.EmbTotalCostKRW = int(embCost.TotalCostUSD * 1450)
+			}
+		}
+	}
+
+	// Combined totals.
+	data.CombinedTotalCostUSD = data.TotalCostUSD + data.EmbTotalCostUSD
+	data.CombinedTotalCostKRW = int(data.CombinedTotalCostUSD * 1450)
+	data.CombinedTodayCostUSD = data.TodayCostUSD + data.EmbTodayCostUSD
+	data.CombinedTodayCostKRW = int(data.CombinedTodayCostUSD * 1450)
+
+	// Quick stats from crash store.
+	if serv.CrashStore != nil {
+		list, _ := serv.CrashStore.BugList()
+		for _, info := range list {
+			if isInternalCrashTitle(info.Title) {
+				continue
+			}
+			if tr := loadAITriageResult(serv.Cfg.Workdir, info.ID); tr != nil {
+				data.AnalyzedCount++
+				if tr.Score >= 70 {
+					data.HighRiskCount++
+				}
+			} else {
+				data.PendingCount++
+			}
+		}
+	}
+
+	// SyzGPT stats.
+	type syzGPTProvider interface {
+		SyzGPTStats() (int, int, int)
+	}
+	if sp, ok := serv.Triager.(syzGPTProvider); ok {
+		gen, valid, inj := sp.SyzGPTStats()
+		data.SyzGPTGenerated = gen
+		data.SyzGPTValid = valid
+		data.SyzGPTInjected = inj
+		if gen > 0 {
+			data.SyzGPTValidRate = valid * 100 / gen
+		}
+	}
+
+	// Embeddings stats.
+	type embeddingProvider interface {
+		EmbeddingsJSON() []byte
+	}
+	if ep, ok := serv.Triager.(embeddingProvider); ok {
+		var ed struct {
+			Embeddings []struct{} `json:"embeddings"`
+			Clusters   []struct{} `json:"clusters"`
+		}
+		if raw := ep.EmbeddingsJSON(); raw != nil {
+			json.Unmarshal(raw, &ed)
+		}
+		data.TotalEmbeddings = len(ed.Embeddings)
+		data.TotalClusters = len(ed.Clusters)
+	}
+
+	// Strategy timestamp.
+	strategyPath := filepath.Join(serv.Cfg.Workdir, "ai-strategy.json")
+	if stratData, err := os.ReadFile(strategyPath); err == nil {
+		var strat struct {
+			Timestamp time.Time `json:"timestamp"`
+		}
+		if json.Unmarshal(stratData, &strat) == nil && !strat.Timestamp.IsZero() {
+			data.HasStrategy = true
+			data.StrategyTime = strat.Timestamp
+		}
+	}
+
+	executeTemplate(w, aiTemplate, &data)
+}
+
+// httpAITriage serves the /ai/triage page with crash analysis and strategy details.
+func (serv *HTTPServer) httpAITriage(w http.ResponseWriter, r *http.Request) {
+	data := UIAITriageData{
+		UIPageHeader: serv.pageHeader(r, "AI Triage"),
+	}
+
+	if serv.Triager == nil {
+		data.Disabled = true
+		data.Model = "none"
+		data.Status = "Disabled"
+		executeTemplate(w, aiTriageTemplate, &data)
+		return
+	}
+
+	// Status.
+	type triagerStatus interface {
+		IsRunning() bool
+		NextBatchSec() int
+	}
+	if t, ok := serv.Triager.(triagerStatus); ok {
+		if t.IsRunning() {
+			data.Status = "Running..."
+		} else {
+			data.Status = "Active"
+		}
+		data.NextBatchSec = t.NextBatchSec()
+	} else {
+		data.Status = "Active"
+	}
+
+	// Model/provider info.
+	data.Model = serv.Cfg.AITriage.Model
+	data.Provider = serv.Cfg.AITriage.Provider
+	if data.Provider == "" {
+		if strings.HasPrefix(data.Model, "claude-") {
+			data.Provider = "anthropic"
+		} else {
+			data.Provider = "openai"
+		}
+	}
+
+	// Load crash analyses from disk.
 	if serv.CrashStore != nil {
 		list, _ := serv.CrashStore.BugList()
 		for _, info := range list {
@@ -1517,20 +1663,20 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Load cost data from live Triager (in-memory) via JSON round-trip.
+	// Claude LLM cost.
 	type costProvider interface {
 		CostJSON() []byte
 	}
 	if cp, ok := serv.Triager.(costProvider); ok {
 		var cost struct {
-			TotalCalls   int       `json:"total_calls"`
-			TotalInput   int       `json:"total_input_tokens"`
-			TotalOutput  int       `json:"total_output_tokens"`
-			TotalCostUSD float64   `json:"total_cost_usd"`
-			TodayCostUSD float64   `json:"today_cost_usd"`
-			TodayCalls   int       `json:"today_calls"`
-			TodayInput   int       `json:"today_input_tokens"`
-			TodayOutput  int       `json:"today_output_tokens"`
+			TotalCalls   int     `json:"total_calls"`
+			TotalInput   int     `json:"total_input_tokens"`
+			TotalOutput  int     `json:"total_output_tokens"`
+			TotalCostUSD float64 `json:"total_cost_usd"`
+			TodayCostUSD float64 `json:"today_cost_usd"`
+			TodayCalls   int     `json:"today_calls"`
+			TodayInput   int     `json:"today_input_tokens"`
+			TodayOutput  int     `json:"today_output_tokens"`
 			History      []struct {
 				Time          time.Time `json:"time"`
 				Type          string    `json:"type"`
@@ -1553,7 +1699,6 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 				data.TodayCostUSD = cost.TodayCostUSD
 				data.TodayCostKRW = int(cost.TodayCostUSD * 1450)
 
-				// History (reverse order: newest first).
 				for i := len(cost.History) - 1; i >= 0; i-- {
 					h := cost.History[i]
 					data.History = append(data.History, UIAPICall{
@@ -1571,18 +1716,7 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get model/provider info from the config directly.
-	data.Model = serv.Cfg.AITriage.Model
-	data.Provider = serv.Cfg.AITriage.Provider
-	if data.Provider == "" {
-		if strings.HasPrefix(data.Model, "claude-") {
-			data.Provider = "anthropic"
-		} else {
-			data.Provider = "openai"
-		}
-	}
-
-	// Phase 7a: SyzGPT stats.
+	// SyzGPT stats.
 	type syzGPTProvider interface {
 		SyzGPTStats() (int, int, int)
 	}
@@ -1596,7 +1730,7 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	executeTemplate(w, aiTemplate, &data)
+	executeTemplate(w, aiTriageTemplate, &data)
 }
 
 func (serv *HTTPServer) httpAIAnalyze(w http.ResponseWriter, r *http.Request) {
@@ -1614,12 +1748,12 @@ func (serv *HTTPServer) httpAIAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 	if t, ok := serv.Triager.(stepARunner); ok {
 		if t.IsRunning() {
-			http.Redirect(w, r, "/ai", http.StatusFound)
+			http.Redirect(w, r, "/ai/triage", http.StatusFound)
 			return
 		}
 		go t.RunStepA(context.Background())
 	}
-	http.Redirect(w, r, "/ai", http.StatusFound)
+	http.Redirect(w, r, "/ai/triage", http.StatusFound)
 }
 
 func (serv *HTTPServer) httpAIStrategize(w http.ResponseWriter, r *http.Request) {
@@ -1637,12 +1771,35 @@ func (serv *HTTPServer) httpAIStrategize(w http.ResponseWriter, r *http.Request)
 	}
 	if t, ok := serv.Triager.(stepBRunner); ok {
 		if t.IsRunning() {
-			http.Redirect(w, r, "/ai", http.StatusFound)
+			http.Redirect(w, r, "/ai/triage", http.StatusFound)
 			return
 		}
 		go t.RunStepB(context.Background())
 	}
-	http.Redirect(w, r, "/ai", http.StatusFound)
+	http.Redirect(w, r, "/ai/triage", http.StatusFound)
+}
+
+func (serv *HTTPServer) httpAIEmbed(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "only POST supported", http.StatusMethodNotAllowed)
+		return
+	}
+	if serv.Triager == nil {
+		http.Error(w, "AI triage is disabled", http.StatusBadRequest)
+		return
+	}
+	type embRunner interface {
+		RunStepEmbeddings(ctx context.Context)
+		IsRunning() bool
+	}
+	if t, ok := serv.Triager.(embRunner); ok {
+		if t.IsRunning() {
+			http.Redirect(w, r, "/ai/embeddings", http.StatusFound)
+			return
+		}
+		go t.RunStepEmbeddings(context.Background())
+	}
+	http.Redirect(w, r, "/ai/embeddings", http.StatusFound)
 }
 
 func (serv *HTTPServer) httpAICrash(w http.ResponseWriter, r *http.Request) {
@@ -1697,14 +1854,8 @@ func (serv *HTTPServer) httpAICrash(w http.ResponseWriter, r *http.Request) {
 }
 
 // httpAILog returns console log entries as JSON for AJAX polling.
+// Supports ?filter=triage|embeddings to return only matching lines.
 func (serv *HTTPServer) httpAILog(w http.ResponseWriter, r *http.Request) {
-	type logGetter interface {
-		LogLines() []struct {
-			Time    time.Time `json:"time"`
-			Message string    `json:"message"`
-		}
-		IsRunning() bool
-	}
 	type logEntry struct {
 		Time    time.Time `json:"time"`
 		Message string    `json:"message"`
@@ -1716,14 +1867,12 @@ func (serv *HTTPServer) httpAILog(w http.ResponseWriter, r *http.Request) {
 
 	resp := logResponse{}
 	if serv.Triager != nil {
-		// Use a broader interface to get log lines.
 		type logProvider interface {
 			IsRunning() bool
 		}
 		if t, ok := serv.Triager.(logProvider); ok {
 			resp.Running = t.IsRunning()
 		}
-		// Get log lines via JSON round-trip to avoid import cycle.
 		type rawLogProvider interface {
 			LogLinesJSON() []byte
 		}
@@ -1732,12 +1881,39 @@ func (serv *HTTPServer) httpAILog(w http.ResponseWriter, r *http.Request) {
 			if data := t.LogLinesJSON(); data != nil {
 				json.Unmarshal(data, &lines)
 			}
+			// Apply filter if specified.
+			if filter := r.FormValue("filter"); filter != "" && filter != "all" {
+				var filtered []logEntry
+				for _, l := range lines {
+					if matchLogFilter(l.Message, filter) {
+						filtered = append(filtered, l)
+					}
+				}
+				lines = filtered
+			}
 			resp.Lines = lines
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// matchLogFilter checks if a log message matches the given filter.
+func matchLogFilter(msg, filter string) bool {
+	switch filter {
+	case "triage":
+		return strings.Contains(msg, "[Step A]") ||
+			strings.Contains(msg, "[Step B]") ||
+			strings.Contains(msg, "[Step C]") ||
+			strings.Contains(msg, "Batch cycle") ||
+			strings.Contains(msg, "Triage started") ||
+			strings.Contains(msg, "batch cycle")
+	case "embeddings":
+		return strings.Contains(msg, "[Embeddings]")
+	default:
+		return true
+	}
 }
 
 func formatTokens(n int) string {
@@ -1763,7 +1939,7 @@ type UIAIPageData struct {
 	Status       string
 	NextBatchSec int
 
-	// Cost.
+	// Claude (LLM) Cost.
 	TodayCalls   int
 	TodayTokens  string
 	TodayCostUSD float64
@@ -1773,6 +1949,68 @@ type UIAIPageData struct {
 	TotalCostUSD float64
 	TotalCostKRW int
 
+	// GPT Embedding Cost (separate tracking).
+	EmbTodayCalls   int
+	EmbTodayTokens  string
+	EmbTodayCostUSD float64
+	EmbTodayCostKRW int
+	EmbTotalCalls   int
+	EmbTotalTokens  string
+	EmbTotalCostUSD float64
+	EmbTotalCostKRW int
+	EmbEnabled      bool
+
+	// Combined totals.
+	CombinedTotalCostUSD float64
+	CombinedTotalCostKRW int
+	CombinedTodayCostUSD float64
+	CombinedTodayCostKRW int
+
+	// Quick stats.
+	AnalyzedCount   int
+	PendingCount    int
+	HighRiskCount   int
+	TotalClusters   int
+	TotalEmbeddings int
+
+	// SyzGPT stats (Phase 7a).
+	SyzGPTGenerated int
+	SyzGPTValid     int
+	SyzGPTInjected  int
+	SyzGPTValidRate int // percentage
+
+	HasStrategy  bool
+	StrategyTime time.Time
+}
+
+// UIAITriageData is the data struct for /ai/triage page.
+type UIAITriageData struct {
+	UIPageHeader
+
+	Disabled bool
+
+	// Status.
+	Model        string
+	Provider     string
+	Status       string
+	NextBatchSec int
+
+	// Claude (LLM) Cost.
+	TodayCalls   int
+	TodayTokens  string
+	TodayCostUSD float64
+	TodayCostKRW int
+	TotalCalls   int
+	TotalTokens  string
+	TotalCostUSD float64
+	TotalCostKRW int
+
+	// SyzGPT stats (Phase 7a).
+	SyzGPTGenerated int
+	SyzGPTValid     int
+	SyzGPTInjected  int
+	SyzGPTValidRate int // percentage
+
 	// Crash Analysis.
 	Crashes       []UIAICrash
 	AnalyzedCount int
@@ -1781,12 +2019,6 @@ type UIAIPageData struct {
 	// Strategy.
 	HasStrategy bool
 	Strategy    UIAIStrategy
-
-	// SyzGPT stats (Phase 7a).
-	SyzGPTGenerated  int
-	SyzGPTValid      int
-	SyzGPTInjected   int
-	SyzGPTValidRate  int // percentage
 
 	// History.
 	History []UIAPICall
@@ -1899,6 +2131,11 @@ type UIAIAnalyticsData struct {
 	CumulativeCostJSON template.JS
 	TokenEfficiency    []UITokenEfficiency
 
+	// Cost efficiency.
+	CostPerCrash    float64
+	CostPerHighRisk float64
+	CostPerDay      float64
+
 	// Section 2: Crash.
 	ScoreDistJSON    template.JS
 	ExploitClassJSON template.JS
@@ -1907,12 +2144,18 @@ type UIAIAnalyticsData struct {
 	MaxScore         int
 
 	// Section 3: Strategy.
-	TotalSeedsInjected int
-	TotalSeedsAccepted int
+	TotalSeedsInjected  int
+	TotalSeedsAccepted  int
 	TotalWeightsApplied int
 	TotalWeightsTotal   int
 	FocusTriggered      int
 	StrategyRuns        []UIStrategyRun
+
+	// SyzGPT.
+	SyzGPTGenerated int
+	SyzGPTValid     int
+	SyzGPTInjected  int
+	SyzGPTValidRate int
 
 	// Section 4: API.
 	AvgCrashTokens    UIAvgTokens
@@ -1920,6 +2163,16 @@ type UIAIAnalyticsData struct {
 	ErrorLog          []UIAPIError
 	CallsPerDayJSON   template.JS
 	TotalCalls        int
+
+	// Section 5: Crash Timeline.
+	CrashTimelineJSON template.JS
+
+	// Section 6: Embedding Analytics.
+	EmbCostUSD      float64
+	EmbClusters     int
+	DedupRatio      float64
+	CombinedCostUSD float64
+	CombinedCostKRW int
 }
 
 type UITokenEfficiency struct {
@@ -2008,7 +2261,120 @@ func (serv *HTTPServer) httpAIAnalytics(w http.ResponseWriter, r *http.Request) 
 	// === Section 4: API Performance ===
 	serv.buildAPIPerformance(&data, ad.DailyStats, ad.History)
 
+	// === Cost Efficiency ===
+	if data.AnalyzedCount > 0 {
+		data.CostPerCrash = data.TotalCostUSD / float64(data.AnalyzedCount)
+	}
+	if data.HighRiskCount > 0 {
+		data.CostPerHighRisk = data.TotalCostUSD / float64(data.HighRiskCount)
+	}
+	if len(ad.DailyStats) > 0 {
+		data.CostPerDay = data.TotalCostUSD / float64(len(ad.DailyStats))
+	}
+
+	// SyzGPT stats.
+	type syzGPTProvider interface {
+		SyzGPTStats() (int, int, int)
+	}
+	if sp, ok := serv.Triager.(syzGPTProvider); ok {
+		gen, valid, inj := sp.SyzGPTStats()
+		data.SyzGPTGenerated = gen
+		data.SyzGPTValid = valid
+		data.SyzGPTInjected = inj
+		if gen > 0 {
+			data.SyzGPTValidRate = valid * 100 / gen
+		}
+	}
+
+	// === Section 5: Crash Timeline ===
+	serv.buildCrashTimeline(&data)
+
+	// === Section 6: Embedding Analytics ===
+	type embCostProvider interface {
+		EmbeddingCostJSON() []byte
+	}
+	if ep, ok := serv.Triager.(embCostProvider); ok {
+		var embCost struct {
+			TotalCostUSD float64 `json:"total_cost_usd"`
+		}
+		if embData := ep.EmbeddingCostJSON(); embData != nil {
+			json.Unmarshal(embData, &embCost)
+		}
+		data.EmbCostUSD = embCost.TotalCostUSD
+	}
+	type embeddingProvider interface {
+		EmbeddingsJSON() []byte
+	}
+	if ep, ok := serv.Triager.(embeddingProvider); ok {
+		var ed struct {
+			Embeddings []struct{} `json:"embeddings"`
+			Clusters   []struct{} `json:"clusters"`
+		}
+		if raw := ep.EmbeddingsJSON(); raw != nil {
+			json.Unmarshal(raw, &ed)
+		}
+		data.EmbClusters = len(ed.Clusters)
+		totalEmb := len(ed.Embeddings)
+		if totalEmb > 0 && data.EmbClusters > 0 {
+			data.DedupRatio = 1.0 - float64(data.EmbClusters)/float64(totalEmb)
+		}
+	}
+	data.CombinedCostUSD = data.TotalCostUSD + data.EmbCostUSD
+	data.CombinedCostKRW = int(data.CombinedCostUSD * 1450)
+
 	executeTemplate(w, aiAnalyticsTemplate, &data)
+}
+
+// buildCrashTimeline creates timeline JSON data for crash discovery over time.
+func (serv *HTTPServer) buildCrashTimeline(data *UIAIAnalyticsData) {
+	if serv.CrashStore == nil {
+		return
+	}
+	list, err := serv.CrashStore.BugList()
+	if err != nil {
+		return
+	}
+
+	type timeSlot struct {
+		Hour string
+		High int
+		Med  int
+		Low  int
+	}
+	slots := make(map[string]*timeSlot)
+	var slotKeys []string
+
+	for _, info := range list {
+		if isInternalCrashTitle(info.Title) {
+			continue
+		}
+		hourKey := info.FirstTime.Format("01/02 15h")
+		if _, ok := slots[hourKey]; !ok {
+			slots[hourKey] = &timeSlot{Hour: hourKey}
+			slotKeys = append(slotKeys, hourKey)
+		}
+		s := slots[hourKey]
+		tr := loadAITriageResult(serv.Cfg.Workdir, info.ID)
+		if tr != nil {
+			if tr.Score >= 70 {
+				s.High++
+			} else if tr.Score >= 40 {
+				s.Med++
+			} else {
+				s.Low++
+			}
+		} else {
+			s.Low++
+		}
+	}
+
+	sort.Strings(slotKeys)
+	var rows []string
+	for _, k := range slotKeys {
+		s := slots[k]
+		rows = append(rows, fmt.Sprintf("['%s', %d, %d, %d]", s.Hour, s.High, s.Med, s.Low))
+	}
+	data.CrashTimelineJSON = template.JS("[" + strings.Join(rows, ",") + "]")
 }
 
 func (serv *HTTPServer) httpAIEmbeddings(w http.ResponseWriter, r *http.Request) {
@@ -2430,7 +2796,8 @@ var (
 	rawCoverTemplate      = createPage("raw_cover", UIRawCoverPage{})
 	jobListTemplate       = createPage("job_list", UIJobList{})
 	textTemplate          = createPage("text", UITextPage{})
-	aiTemplate            = createPage("ai", UIAIPageData{})               // PROBE: AI dashboard
+	aiTemplate            = createPage("ai", UIAIPageData{})                // PROBE: AI dashboard
+	aiTriageTemplate      = createPage("aitriage", UIAITriageData{})       // PROBE: AI triage
 	aiCrashTemplate       = createPage("aicrash", UIAICrashPage{})         // PROBE: AI crash detail
 	aiAnalyticsTemplate   = createPage("aianalytics", UIAIAnalyticsData{}) // PROBE: AI analytics
 	aiEmbeddingsTemplate  = createPage("aiembeddings", UIAIEmbeddingsData{}) // PROBE: AI embeddings

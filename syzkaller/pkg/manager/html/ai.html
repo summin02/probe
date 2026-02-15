@@ -1,108 +1,112 @@
 {{/*
 Copyright 2024 syzkaller project authors. All rights reserved.
 Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
-PROBE: AI-guided fuzzing dashboard page (Phase 3).
+PROBE: AI Dashboard — summary overview with costs and full console.
 */}}
+
+<style>
+.tab-nav { display: flex; gap: 8px; margin-bottom: 16px; }
+.tab-nav a { padding: 6px 16px; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; color: #333; }
+.tab-nav a.active { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+.summary-cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+.card { border: 1px solid #ddd; border-radius: 8px; padding: 14px 18px; min-width: 150px; flex: 1; background: #f8f9fa; }
+.card h3 { margin: 0 0 6px 0; font-size: 12px; color: #666; text-transform: uppercase; }
+.card .value { font-size: 22px; font-weight: bold; }
+.card .sub { font-size: 11px; color: #999; margin-top: 2px; }
+.quick-links { display: flex; gap: 12px; margin: 16px 0; flex-wrap: wrap; }
+.quick-links a { padding: 8px 20px; border: 1px solid #1a73e8; border-radius: 6px; text-decoration: none; color: #1a73e8; font-weight: 500; }
+.quick-links a:hover { background: #e8f0fe; }
+</style>
+
+<div class="tab-nav">
+  <a href="/ai" class="active">Dashboard</a>
+  <a href="/ai/triage">AI Triage</a>
+  <a href="/ai/embeddings">Embeddings</a>
+  <a href="/ai/analytics">Analytics</a>
+</div>
+
+{{if .Disabled}}
+<p>AI triage is disabled. Configure <code>ai_triage</code> in your config file with <code>model</code> and <code>api_key</code> to enable.</p>
+{{else}}
 
 <table class="list_table">
 <caption>AI Status:</caption>
 <tr><td class="title">Model</td><td>{{.Model}} ({{.Provider}})</td></tr>
 <tr><td class="title">Status</td><td><span id="ai-status">{{.Status}}</span>{{if .NextBatchSec}} | Next batch: <span id="countdown"></span>{{end}}</td></tr>
-<tr><td class="title">Today</td><td>{{.TodayCalls}} calls, {{.TodayTokens}} tokens, ${{printf "%.2f" .TodayCostUSD}} (~{{.TodayCostKRW}} KRW)</td></tr>
-<tr><td class="title">Total</td><td>{{.TotalCalls}} calls, {{.TotalTokens}} tokens, ${{printf "%.2f" .TotalCostUSD}} (~{{.TotalCostKRW}} KRW)</td></tr>
-<tr><td class="title">Analytics</td><td><a href="/ai/analytics">View detailed analytics &rarr;</a></td></tr>
-<tr><td class="title">Embeddings</td><td><a href="/ai/embeddings">View crash embeddings &amp; clusters &rarr;</a></td></tr>
-{{if .SyzGPTGenerated}}<tr><td class="title">SyzGPT</td><td>{{.SyzGPTGenerated}} generated, {{.SyzGPTValid}} valid ({{.SyzGPTValidRate}}%), {{.SyzGPTInjected}} injected</td></tr>{{end}}
-</table>
-
-{{if not .Disabled}}
-<br>
-<table class="list_table" style="width:auto">
-<caption>Actions:</caption>
-<tr>
-	<td class="title" style="vertical-align:top">Crash Analysis</td>
-	<td>
-		<button id="analyzeBtn" onclick="triggerAI('analyze')">Analyze Now</button>
-		<span style="color:#888; font-size:12px; margin-left:6px">LLM analyzes each crash report and scores exploitability (0-100)</span>
-	</td>
-</tr>
-<tr>
-	<td class="title" style="vertical-align:top">Fuzzing Strategy</td>
-	<td>
-		<button id="stratBtn" onclick="triggerAI('strategize')">Strategize Now</button>
-		<span style="color:#888; font-size:12px; margin-left:6px">LLM reviews coverage data and recommends syscall weights, seeds, focus targets</span>
-	</td>
-</tr>
 </table>
 
 <br>
-<b>Console</b>
-<div id="console" style="background:#1e1e1e; color:#d4d4d4; font-family:'Consolas','Courier New',monospace; font-size:12px; padding:10px; height:200px; overflow-y:auto; border:1px solid #555; border-radius:4px; margin-bottom:16px; white-space:pre-wrap;">Waiting for AI activity...
+<div class="summary-cards">
+  <div class="card">
+    <h3>Analyzed</h3>
+    <div class="value">{{.AnalyzedCount}}</div>
+    <div class="sub">crashes</div>
+  </div>
+  <div class="card">
+    <h3>High Risk</h3>
+    <div class="value" style="color:#c0392b">{{.HighRiskCount}}</div>
+    <div class="sub">score &ge; 70</div>
+  </div>
+  <div class="card">
+    <h3>Pending</h3>
+    <div class="value">{{.PendingCount}}</div>
+    <div class="sub">awaiting analysis</div>
+  </div>
+  <div class="card">
+    <h3>Clusters</h3>
+    <div class="value">{{.TotalClusters}}</div>
+    <div class="sub">{{.TotalEmbeddings}} embeddings</div>
+  </div>
+  {{if .SyzGPTGenerated}}
+  <div class="card">
+    <h3>SyzGPT</h3>
+    <div class="value">{{.SyzGPTValid}}/{{.SyzGPTGenerated}}</div>
+    <div class="sub">{{.SyzGPTValidRate}}% valid, {{.SyzGPTInjected}} injected</div>
+  </div>
+  {{end}}
+  {{if .HasStrategy}}
+  <div class="card">
+    <h3>Last Strategy</h3>
+    <div class="value" style="font-size:14px">{{formatTime .StrategyTime}}</div>
+  </div>
+  {{end}}
 </div>
 
-{{if .Crashes}}
 <table class="list_table">
-<caption>Crash Exploitability ({{.AnalyzedCount}} analyzed, {{.PendingCount}} pending):</caption>
-<thead><tr>
-	<th><a onclick="return sortTable(this, 'Title', textSort)" href="#">Title</a></th>
-	<th><a onclick="return sortTable(this, 'Score', numSort)" href="#">Score</a></th>
-	<th><a onclick="return sortTable(this, 'Class', textSort)" href="#">Class</a></th>
-	<th><a onclick="return sortTable(this, 'Vuln', textSort)" href="#">Vuln</a></th>
-	<th><a onclick="return sortTable(this, 'Time', textSort)" href="#">Time</a></th>
-</tr></thead>
-<tbody>
-{{range $c := .Crashes}}
-<tr>
-	<td class="title"><a href="/crash?id={{$c.ID}}">{{$c.Title}}</a></td>
-	<td class="stat" {{if $c.ScoreColor}}style="background:{{$c.ScoreColor}}"{{end}}>{{if $c.HasScore}}<a href="/ai/crash?id={{$c.ID}}" style="font-weight:bold; color:inherit; text-decoration:none">{{$c.Score}}</a>{{else}}-{{end}}</td>
-	<td>{{$c.ExploitClass}}</td>
-	<td>{{$c.VulnType}}</td>
-	<td class="time">{{if $c.HasScore}}{{formatTime $c.AnalyzedAt}}{{else}}<span style="color:#999">pending</span>{{end}}</td>
-</tr>
-{{end}}
-</tbody>
+<caption>Claude (LLM) Cost:</caption>
+<tr><td class="title">Today</td><td>{{.TodayCalls}} calls, {{.TodayTokens}} tokens, ${{printf "%.2f" .TodayCostUSD}} (~{{.TodayCostKRW}} KRW)</td></tr>
+<tr><td class="title">Total</td><td>{{.TotalCalls}} calls, {{.TotalTokens}} tokens, ${{printf "%.2f" .TotalCostUSD}} (~{{.TotalCostKRW}} KRW)</td></tr>
+</table>
+
+{{if .EmbEnabled}}
+<br>
+<table class="list_table">
+<caption>GPT Embedding Cost:</caption>
+<tr><td class="title">Today</td><td>{{.EmbTodayCalls}} calls, {{.EmbTodayTokens}} tokens, ${{printf "%.4f" .EmbTodayCostUSD}} (~{{.EmbTodayCostKRW}} KRW)</td></tr>
+<tr><td class="title">Total</td><td>{{.EmbTotalCalls}} calls, {{.EmbTotalTokens}} tokens, ${{printf "%.4f" .EmbTotalCostUSD}} (~{{.EmbTotalCostKRW}} KRW)</td></tr>
+</table>
+
+<br>
+<table class="list_table">
+<caption>Combined Total:</caption>
+<tr><td class="title">Today</td><td>${{printf "%.4f" .CombinedTodayCostUSD}} (~{{.CombinedTodayCostKRW}} KRW)</td></tr>
+<tr><td class="title">Total</td><td>${{printf "%.4f" .CombinedTotalCostUSD}} (~{{.CombinedTotalCostKRW}} KRW)</td></tr>
 </table>
 {{end}}
 
 <br>
-{{if .HasStrategy}}
-<table class="list_table">
-<caption>Last Strategy ({{formatTime .Strategy.Timestamp}}):</caption>
-<tr><td class="title">Summary</td><td style="word-wrap:break-word; overflow-wrap:break-word; white-space:pre-wrap; max-width:700px">{{.Strategy.Summary}}</td></tr>
-<tr><td class="title">Syscall Weights</td><td style="word-wrap:break-word; overflow-wrap:break-word; max-width:700px">{{if .Strategy.WeightsApplied}}{{.Strategy.WeightsApplied}}/{{.Strategy.WeightsTotal}} applied | {{end}}{{range .Strategy.SyscallWeights}}{{.Name}} {{printf "%.1f" .Weight}}x | {{end}}{{if not .Strategy.SyscallWeights}}-{{end}}{{if .Strategy.WeightErrors}}<br><span style="color:#c44">Unmatched: {{range .Strategy.WeightErrors}}{{.}}, {{end}}</span>{{end}}</td></tr>
-<tr><td class="title">Seed Hints</td><td style="word-wrap:break-word; overflow-wrap:break-word; max-width:700px">{{.Strategy.SeedsInjected}} hints → {{.Strategy.SeedsAccepted}} programs injected{{if .Strategy.SeedHints}}<br>{{range .Strategy.SeedHints}}<b>{{.Target}}</b>: {{range $i, $s := .Syscalls}}{{if $i}}, {{end}}{{$s}}{{end}} | {{end}}{{end}}{{if .Strategy.SeedErrors}}<br><span style="color:#c44">No match: {{range .Strategy.SeedErrors}}{{.}} | {{end}}</span>{{end}}</td></tr>
-<tr><td class="title">Mutation</td><td style="word-wrap:break-word; overflow-wrap:break-word; max-width:700px">{{.Strategy.MutationSummary}}</td></tr>
-<tr><td class="title">Focus</td><td style="word-wrap:break-word; overflow-wrap:break-word; max-width:700px">{{range .Strategy.FocusTargets}}{{.CrashTitle}} (p{{.Priority}}) | {{end}}{{if not .Strategy.FocusTargets}}-{{end}}</td></tr>
-</table>
-{{end}}
+<div class="quick-links">
+  <a href="/ai/triage">Triage &amp; Strategy &rarr;</a>
+  <a href="/ai/embeddings">Embeddings &rarr;</a>
+  <a href="/ai/analytics">Analytics &rarr;</a>
+</div>
 
-{{if .History}}
 <br>
-<table class="list_table">
-<caption>API Call History (last {{len .History}}):</caption>
-<thead><tr>
-	<th><a onclick="return sortTable(this, 'Time', textSort)" href="#">Time</a></th>
-	<th>Type</th>
-	<th>Tokens (in/out)</th>
-	<th><a onclick="return sortTable(this, 'Cost', floatSort)" href="#">Cost</a></th>
-	<th>Result</th>
-</tr></thead>
-<tbody>
-{{range .History}}
-<tr>
-	<td class="time">{{formatTime .Time}}</td>
-	<td>{{.Type}}</td>
-	<td class="stat">{{.Input}}/{{.Output}}</td>
-	<td class="stat">${{printf "%.3f" .CostUSD}}</td>
-	<td>{{if .Success}}{{.ResultSummary}}{{else}}<span style="color:red">{{.Error}}</span>{{end}}</td>
-</tr>
-{{end}}
-</tbody>
-</table>
-{{end}}
+<b>Console (All)</b>
+<div id="console" style="background:#1e1e1e; color:#d4d4d4; font-family:'Consolas','Courier New',monospace; font-size:12px; padding:10px; height:250px; overflow-y:auto; border:1px solid #555; border-radius:4px; margin-bottom:16px; white-space:pre-wrap;">Waiting for AI activity...
+</div>
 
 <script>
-// Countdown timer.
 {{if .NextBatchSec}}
 var nextBatch = {{.NextBatchSec}};
 setInterval(function() {
@@ -119,32 +123,9 @@ setInterval(function() {
 })();
 {{end}}
 
-// Trigger AI analysis/strategy via AJAX.
-function triggerAI(action) {
-	var btn = document.getElementById(action === 'analyze' ? 'analyzeBtn' : 'stratBtn');
-	btn.disabled = true;
-	btn.textContent = action === 'analyze' ? 'Analyzing...' : 'Strategizing...';
-	fetch('/api/ai/' + action, {method: 'POST'}).then(function() {
-		pollLog();
-	}).catch(function(err) {
-		appendLog('ERROR: ' + err);
-		btn.disabled = false;
-		btn.textContent = action === 'analyze' ? 'Analyze Now' : 'Strategize Now';
-	});
-}
-
-// Console log polling.
 var lastLogLen = 0;
-var pollTimer = null;
 var wasRunning = false;
-
-function appendLog(msg) {
-	var c = document.getElementById('console');
-	if (!c) return;
-	var ts = new Date().toLocaleTimeString('en-GB', {hour12: false});
-	c.textContent += '[' + ts + '] ' + msg + '\n';
-	c.scrollTop = c.scrollHeight;
-}
+var pollInterval = null;
 
 function pollLog() {
 	fetch('/api/ai/log').then(function(r) { return r.json(); }).then(function(data) {
@@ -164,29 +145,23 @@ function pollLog() {
 		}
 		if (data.running) {
 			wasRunning = true;
-		}
-		if (!data.running) {
-			var ab = document.getElementById('analyzeBtn');
-			var sb = document.getElementById('stratBtn');
-			if (ab) { ab.disabled = false; ab.textContent = 'Analyze Now'; }
-			if (sb) { sb.disabled = false; sb.textContent = 'Strategize Now'; }
+			if (pollInterval) clearTimeout(pollInterval);
+			pollInterval = setTimeout(pollLog, 1500);
+		} else {
 			if (wasRunning) {
 				wasRunning = false;
-				appendLog('Completed. Refreshing page...');
 				setTimeout(function() { location.reload(); }, 1500);
 				return;
 			}
-			if (pollTimer) { clearTimeout(pollTimer); }
-			pollTimer = setTimeout(function() { pollTimer = null; }, 5000);
-			return;
+			if (pollInterval) clearTimeout(pollInterval);
+			pollInterval = setTimeout(pollLog, 5000);
 		}
-		setTimeout(pollLog, 1500);
 	}).catch(function() {
-		setTimeout(pollLog, 3000);
+		if (pollInterval) clearTimeout(pollInterval);
+		pollInterval = setTimeout(pollLog, 3000);
 	});
 }
 
-// Load initial log lines on page load.
 (function() {
 	fetch('/api/ai/log').then(function(r) { return r.json(); }).then(function(data) {
 		var c = document.getElementById('console');
@@ -200,12 +175,10 @@ function pollLog() {
 		}
 		lastLogLen = data.lines.length;
 		c.scrollTop = c.scrollHeight;
-		if (data.running) { wasRunning = true; pollLog(); }
+		if (data.running) { wasRunning = true; }
+		pollLog();
 	});
 })();
 </script>
 
-{{else}}
-<br>
-<p>AI triage is disabled. Configure <code>ai_triage</code> in your config file with <code>model</code> and <code>api_key</code> to enable.</p>
 {{end}}

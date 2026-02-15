@@ -600,6 +600,28 @@ func (t *Triager) RunStepB(ctx context.Context) {
 	t.logf("Manual Step B finished")
 }
 
+// RunStepEmbeddings runs crash embedding on demand (manual trigger).
+func (t *Triager) RunStepEmbeddings(ctx context.Context) {
+	t.mu.Lock()
+	if t.running {
+		t.mu.Unlock()
+		t.logf("Already running, skipping manual Embeddings")
+		return
+	}
+	t.running = true
+	t.mu.Unlock()
+
+	defer func() {
+		t.mu.Lock()
+		t.running = false
+		t.mu.Unlock()
+	}()
+
+	t.logf("Manual Embeddings triggered")
+	t.stepEmbeddings(ctx)
+	t.logf("Manual Embeddings finished")
+}
+
 func (t *Triager) runBatch(ctx context.Context) {
 	t.mu.Lock()
 	if t.running {
@@ -1256,6 +1278,34 @@ func (t *Triager) EmbeddingCost() *CostSnapshot {
 	}
 	snap := t.embeddingClient.Cost()
 	return &snap
+}
+
+// EmbeddingCostJSON returns embedding cost as JSON (for dashboard, avoids import cycle).
+func (t *Triager) EmbeddingCostJSON() []byte {
+	snap := t.EmbeddingCost()
+	if snap == nil {
+		return nil
+	}
+	data, _ := json.Marshal(struct {
+		TotalCalls   int     `json:"total_calls"`
+		TotalInput   int     `json:"total_input_tokens"`
+		TotalOutput  int     `json:"total_output_tokens"`
+		TotalCostUSD float64 `json:"total_cost_usd"`
+		TodayCostUSD float64 `json:"today_cost_usd"`
+		TodayCalls   int     `json:"today_calls"`
+		TodayInput   int     `json:"today_input_tokens"`
+		TodayOutput  int     `json:"today_output_tokens"`
+	}{
+		TotalCalls:   snap.TotalCalls,
+		TotalInput:   snap.TotalInput,
+		TotalOutput:  snap.TotalOutput,
+		TotalCostUSD: snap.TotalCostUSD,
+		TodayCostUSD: snap.TodayCostUSD,
+		TodayCalls:   snap.TodayCalls,
+		TodayInput:   snap.TodayInput,
+		TodayOutput:  snap.TodayOutput,
+	})
+	return data
 }
 
 // ClusterSnapshot returns current embedding and cluster state.
