@@ -422,14 +422,19 @@ make probe_ebpf   # BPF 오브젝트 + 로더를 bin/linux_amd64/에 빌드
 
 **원리**: MinimizeCorpus 모드에서 각 call을 1회 시험 제거 → 안전한 것부터 제거 → 연쇄 제거 효과.
 
-### 6f. DEzzer — Operator별 추적 + DE 최적화 — **완료**
+### 6f. DEzzer — 하이브리드 TS+DE 뮤테이션 옵티마이저 — **완료**
 
-**목표**: mutation operator별 성과 실시간 추적 + DE 알고리즘 자동 가중치 최적화.
+**목표**: mutation operator별 성과 실시간 추적 + Thompson Sampling(주) + Differential Evolution(보조) 하이브리드 최적화.
 
-**수정 파일**: `prog/mutation.go` (반환값 string 추가), `pkg/fuzzer/dezzer.go` (신규: DE 엔진), `pkg/fuzzer/fuzzer.go` (DEzzer 통합), `pkg/fuzzer/job.go` (operator 캡처), `pkg/fuzzer/stats.go` (operator 통계)
+**수정 파일**: `prog/mutation.go` (반환값 string), `pkg/fuzzer/dezzer.go` (TS+DE 하이브리드 엔진), `pkg/fuzzer/fuzzer.go` (DEzzer 통합, crash bonus), `pkg/fuzzer/job.go` (FeedbackSource), `pkg/fuzzer/stats.go`, `pkg/aitriage/aitriage.go`, `pkg/aitriage/prompt_strategy.go`, `syz-manager/ai_triage.go`
 
-**3계층 아키텍처**: Default × AI Base × DE Delta (±20%).
-Lazy DE: 100회마다 1세대 진화, population=10, sliding window=100.
+**4계층 아키텍처**: Default × AI Base × TS Delta(±20%) × DE Correction(±5%).
+
+**Thompson Sampling(주)**: Beta-Bernoulli per-operator, 시간 기반 decay(30초, 0.9), path 가중치(mutate=1x, smash=2x, focus=3x), IPW 보정, 포화 감지(상대 성능 모드), crash bonus(alpha+=10).
+
+**DE(보조)**: ±5% correction, 독립 fitness(제곱 오차), 충돌 감지(3/5 불일치→±2% 감쇠).
+
+**리스크 대응**: warm-up 1000회, 탐색 라운드(5000회마다 50회 중립), 선택적 AI reset(소변경 30% 보존/대변경 전체 리셋), Phase 12 ML feature log(100K ring buffer).
 
 ### 6f'. Focus 커버리지 피드백 루프 — **완료**
 

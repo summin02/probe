@@ -430,21 +430,40 @@ Phase 6 focuses on AI API cost reduction and data-driven fuzzing optimization. A
 
 Non-corpus modes (PatchTest, CrashSnapshot) use the original end→begin order.
 
-### 6f. DEzzer — Operator Tracking + DE Optimization — **DONE**
+### 6f. DEzzer — Hybrid TS+DE Mutation Optimizer — **DONE**
 
-**Goal**: Track per-operator mutation success rates and auto-optimize weights via Differential Evolution.
+**Goal**: Track per-operator mutation success rates and auto-optimize weights via Thompson Sampling (primary) + Differential Evolution (secondary).
 
-**Files modified**: `prog/mutation.go` (string return value), `pkg/fuzzer/dezzer.go` (new: DE engine), `pkg/fuzzer/fuzzer.go` (DEzzer integration), `pkg/fuzzer/job.go` (operator capture), `pkg/fuzzer/stats.go` (operator stats)
+**Files modified**: `prog/mutation.go` (string return value), `pkg/fuzzer/dezzer.go` (TS+DE hybrid engine), `pkg/fuzzer/fuzzer.go` (DEzzer integration, crash bonus), `pkg/fuzzer/job.go` (operator capture, FeedbackSource), `pkg/fuzzer/stats.go` (operator stats), `pkg/aitriage/aitriage.go` (DEzzerStatusData extended), `pkg/aitriage/prompt_strategy.go` (TS+DE prompt), `syz-manager/ai_triage.go` (snapshot wiring)
 
-**3-Layer Architecture**:
+**4-Layer Architecture**:
 ```
 Layer 1: DefaultMutateOpts (constant)     — Squash:50, Splice:200, ...
 Layer 2: AI Base Weights (hourly)         — multiplier set by SetAIMutationHints
-Layer 3: DE Delta (real-time, ±20%)       — fine-tuning via DEzzer
-Final weights = Default × AI Base × DE Delta
+Layer 3: TS Delta (real-time, ±20%)       — per-operator Bayesian adaptation
+Layer 4: DE Correction (real-time, ±5%)   — operator synergy search
+Final weights = Default × AI Base × TS Delta × DE Correction
 ```
 
-**Lazy DE**: Evolves 1 generation every 100 mutation results. Population=10, sliding window=100 per operator. AI reset → population reset.
+**Thompson Sampling (primary)**:
+- Beta-Bernoulli posteriors per operator (binary success/failure signal)
+- Time-based decay (30s intervals, factor 0.9, ~3.3 min half-life)
+- Path-weighted feedback: mutateProgRequest=1x, smashJob=2x, focusJob=3x
+- IPW correction for selection bias (cap 5x)
+- Saturation detection: when mean prob < 0.1%, switches to relative performance mode
+- Crash bonus: alpha += 10 for crash-triggering operators
+
+**Differential Evolution (secondary)**:
+- ±5% correction range (vs TS ±20%), independent fitness (squared error from ideal)
+- Conflict detection: when TS and DE disagree on 3+/5 operators, DE dampened to ±2%
+- Population=10, lazy evolution every 100 records, stagnation restart
+
+**Risk Mitigations**:
+- Warm-up period: first 1000 records use neutral delta (Default × AI Base only)
+- Exploration rounds: every 5000 records, 50 records with neutral delta
+- Selective AI reset: small change (Σ|Δ|<0.3) → 30% TS preserve + DE kept; large → full reset
+- AI direction hint injection: AI base increase → alpha+2, decrease → beta+2
+- Phase 12 ML feature collection: ring buffer of 100K (timestamp, op, gain, source, saturated)
 
 **mutation.go change**: `Mutate()` and `MutateWithOpts()` now return `string` (operator name). Go allows ignoring return values, so 12+ test callsites and tool callsites need no modification.
 
