@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,6 +58,13 @@ type Fuzzer struct {
 	focusResultsMu sync.Mutex
 	focusResults   []FocusJobResult
 
+	// PROBE: Phase 8d — MOCK BiGRU client for context-aware insertCall.
+	ngramClient *NgramClient
+
+	// PROBE: Phase 8f — ablation cache for effective component inference.
+	ablationMu    sync.Mutex
+	ablationCache map[string][]bool // crash title → essential mask
+
 	execQueues
 }
 
@@ -84,6 +92,7 @@ func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 		focusTitles: map[string]bool{},
 	}
 	f.dezzer = NewDEzzer(f.Logf)
+	f.ngramClient = NewNgramClient("", f.Logf) // Phase 8d: MOCK BiGRU client
 	f.execQueues = newExecQueues(f)
 	f.updateChoiceTable(nil)
 	go f.choiceTableUpdater()
@@ -186,7 +195,7 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 			if len(triage) > 0 {
 				covGain = len(triage)
 			}
-			fuzzer.dezzer.RecordResult(req.MutOp, covGain, SourceMutate)
+			fuzzer.dezzer.RecordResult(req.MutOp, "", covGain, SourceMutate, -1)
 		}
 
 		if len(triage) != 0 {
@@ -783,18 +792,32 @@ func (fuzzer *Fuzzer) SetAIMutationHints(hints interface{}) {
 }
 
 // PROBE: getAIMutateOpts returns the layered mutation weights.
-// Priority: DEzzer (Default × AI × DE) > AI only > Default.
-func (fuzzer *Fuzzer) getAIMutateOpts() prog.MutateOpts {
+// Phase 8b: prevOp enables pair-conditioned TS. Phase 8e: cluster enables per-subsystem TS.
+// Priority: DEzzer (Default × AI × PairTS/ClusterTS/GlobalTS × DE) > AI only > Default.
+func (fuzzer *Fuzzer) getAIMutateOpts(prevOp string, cluster int) prog.MutateOpts {
+	var opts prog.MutateOpts
 	if fuzzer.dezzer != nil {
-		return fuzzer.dezzer.GetCurrentWeights()
+		opts = fuzzer.dezzer.GetCurrentWeightsForPair(prevOp, cluster)
+	} else {
+		fuzzer.aiMutHintsMu.Lock()
+		hints := fuzzer.aiMutHints
+		fuzzer.aiMutHintsMu.Unlock()
+		if hints != nil {
+			opts = *hints
+		} else {
+			opts = prog.DefaultMutateOpts
+		}
 	}
-	fuzzer.aiMutHintsMu.Lock()
-	hints := fuzzer.aiMutHints
-	fuzzer.aiMutHintsMu.Unlock()
-	if hints != nil {
-		return *hints
+
+	// Phase 8d: Attach BiGRU prediction callback if server is healthy and UCB-1 favors it.
+	if fuzzer.ngramClient != nil && fuzzer.ngramClient.ShouldUseBiGRU() {
+		opts.PredictCall = func(calls []string) (string, float64) {
+			name, conf, _ := fuzzer.ngramClient.PredictNextCall(calls)
+			return name, conf
+		}
 	}
-	return prog.DefaultMutateOpts
+
+	return opts
 }
 
 // PROBE: Phase 6 — FocusJobResult captures focus job outcomes for AI feedback.
@@ -829,6 +852,292 @@ func (fuzzer *Fuzzer) FocusResults() []FocusJobResult {
 	out := make([]FocusJobResult, len(fuzzer.focusResults))
 	copy(out, fuzzer.focusResults)
 	return out
+}
+
+// Phase 8f: Ablation cache for effective component inference.
+// Maps crash title → essential syscall mask (true = essential for crash reproduction).
+func (fuzzer *Fuzzer) getOrComputeAblation(exec queue.Executor, p *prog.Prog, title string, rnd *rand.Rand) []bool {
+	fuzzer.ablationMu.Lock()
+	if cached, ok := fuzzer.ablationCache[title]; ok {
+		fuzzer.ablationMu.Unlock()
+		return cached
+	}
+	fuzzer.ablationMu.Unlock()
+
+	result := fuzzer.computeAblation(exec, p, rnd)
+
+	fuzzer.ablationMu.Lock()
+	if fuzzer.ablationCache == nil {
+		fuzzer.ablationCache = make(map[string][]bool)
+	}
+	// Limit cache size to prevent unbounded growth.
+	if len(fuzzer.ablationCache) > 1000 {
+		fuzzer.ablationCache = make(map[string][]bool)
+	}
+	fuzzer.ablationCache[title] = result
+	fuzzer.ablationMu.Unlock()
+
+	essentialCount := 0
+	for _, e := range result {
+		if e {
+			essentialCount++
+		}
+	}
+	fuzzer.Logf(0, "PROBE: ablation for '%s': %d/%d calls essential", title, essentialCount, len(result))
+	return result
+}
+
+// computeAblation identifies essential syscalls by removing each one and checking
+// if the crash/coverage behavior changes. Essential calls are those whose removal
+// reduces the program's effectiveness.
+func (fuzzer *Fuzzer) computeAblation(exec queue.Executor, p *prog.Prog, rnd *rand.Rand) []bool {
+	essential := make([]bool, len(p.Calls))
+	for i := range essential {
+		essential[i] = true // default: all essential
+	}
+
+	// Baseline: execute original program 3 times to get stable signal.
+	var baselineSignal signal.Signal
+	for rep := 0; rep < 3; rep++ {
+		result := fuzzer.execute(exec, &queue.Request{
+			Prog:     p,
+			ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
+			Stat:     fuzzer.statExecFocus,
+		})
+		if result.Stop() {
+			return essential
+		}
+		if result.Info != nil {
+			for _, ci := range result.Info.Calls {
+				if ci != nil {
+					thisSignal := signal.FromRaw(ci.Signal, 0)
+					if baselineSignal == nil {
+						baselineSignal = thisSignal
+					} else {
+						baselineSignal.Merge(thisSignal)
+					}
+				}
+			}
+		}
+	}
+
+	baselineLen := baselineSignal.Len()
+	if baselineLen == 0 {
+		return essential
+	}
+
+	// Try removing each call and compare signal.
+	for i := range p.Calls {
+		if len(p.Calls) <= 1 {
+			break // cannot remove the only call
+		}
+
+		test := p.Clone()
+		test.RemoveCall(i)
+		if len(test.Calls) == 0 {
+			continue
+		}
+
+		// Execute ablated program.
+		var ablatedSignal signal.Signal
+		significantLoss := false
+		for rep := 0; rep < 3; rep++ {
+			result := fuzzer.execute(exec, &queue.Request{
+				Prog:     test,
+				ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
+				Stat:     fuzzer.statExecFocus,
+			})
+			if result.Stop() {
+				return essential
+			}
+			if result.Info != nil {
+				for _, ci := range result.Info.Calls {
+					if ci != nil {
+						thisSignal := signal.FromRaw(ci.Signal, 0)
+						if ablatedSignal == nil {
+							ablatedSignal = thisSignal
+						} else {
+							ablatedSignal.Merge(thisSignal)
+						}
+					}
+				}
+			}
+		}
+
+		// If removing this call loses significant signal, it's essential.
+		ablatedLen := ablatedSignal.Len()
+		if ablatedLen >= baselineLen*80/100 {
+			// Losing <20% signal → this call is non-essential.
+			significantLoss = false
+		} else {
+			significantLoss = true
+		}
+
+		if !significantLoss {
+			essential[i] = false
+		}
+	}
+
+	return essential
+}
+
+// essentialMutate creates a mutated program focused on essential calls.
+// Non-essential calls are preserved but not mutated — mutation budget is concentrated
+// on essential calls to maximize crash reproduction/exploitation.
+func (fuzzer *Fuzzer) essentialMutate(p *prog.Prog, essential []bool, rnd *rand.Rand, opts prog.MutateOpts) (*prog.Prog, string) {
+	// Build noMutate map: block mutation of non-essential calls.
+	noMutate := make(map[int]bool)
+	for k, v := range fuzzer.Config.NoMutateCalls {
+		noMutate[k] = v
+	}
+	for i, e := range essential {
+		if !e && i < len(p.Calls) {
+			noMutate[p.Calls[i].Meta.ID] = true
+		}
+	}
+
+	clone := p.Clone()
+	op := clone.MutateWithOpts(rnd, prog.RecommendedCalls,
+		fuzzer.ChoiceTable(),
+		noMutate,
+		fuzzer.Config.Corpus.Programs(),
+		opts)
+	if op == "" {
+		return nil, ""
+	}
+	return clone, op
+}
+
+// Phase 8c: recordObjectiveReward computes and records reward based on current objective.
+func (fuzzer *Fuzzer) recordObjectiveReward(info *flatrpc.ProgInfo, covGain int) {
+	if fuzzer.dezzer == nil {
+		return
+	}
+	obj := fuzzer.dezzer.CurrentObjective()
+	var reward float64
+	switch obj {
+	case ObjCoverage:
+		if covGain > 0 {
+			reward = 1.0
+		}
+	case ObjMemorySafety:
+		if info.EbpfUafScore > 0 {
+			reward += float64(info.EbpfUafScore) / 100.0
+		}
+		if info.EbpfCrossCacheCount > 0 {
+			reward += 0.5
+		}
+		if info.EbpfDoubleFreeCount > 0 {
+			reward += 0.8
+		}
+		if info.EbpfWriteToFreedCount > 0 {
+			reward += 1.0
+		}
+	case ObjPrivEsc:
+		if info.EbpfPrivEscCount > 0 {
+			reward = 1.0
+		}
+	}
+	if reward > 0 {
+		fuzzer.dezzer.RecordObjectiveReward(reward)
+	}
+}
+
+// Phase 8e: Kernel subsystem cluster constants.
+const (
+	ClusterFS     = 0
+	ClusterNet    = 1
+	ClusterMM     = 2
+	ClusterIPC    = 3
+	ClusterDevice = 4
+	ClusterOther  = 5
+)
+
+// classifyProgram determines the dominant kernel subsystem cluster for a program.
+func classifyProgram(p *prog.Prog) int {
+	var counts [numClusters]int
+	for _, c := range p.Calls {
+		name := c.Meta.Name
+		switch {
+		case isFS(name):
+			counts[ClusterFS]++
+		case isNet(name):
+			counts[ClusterNet]++
+		case isMM(name):
+			counts[ClusterMM]++
+		case isIPC(name):
+			counts[ClusterIPC]++
+		case isDevice(name):
+			counts[ClusterDevice]++
+		default:
+			counts[ClusterOther]++
+		}
+	}
+	best := ClusterOther
+	for i, c := range counts {
+		if c > counts[best] {
+			best = i
+		}
+	}
+	return best
+}
+
+func isFS(name string) bool {
+	return strings.HasPrefix(name, "open") || strings.HasPrefix(name, "read") ||
+		strings.HasPrefix(name, "write") || strings.HasPrefix(name, "close") ||
+		strings.HasPrefix(name, "stat") || strings.HasPrefix(name, "fstat") ||
+		strings.HasPrefix(name, "lstat") || strings.HasPrefix(name, "mkdir") ||
+		strings.HasPrefix(name, "rmdir") || strings.HasPrefix(name, "unlink") ||
+		strings.HasPrefix(name, "rename") || strings.HasPrefix(name, "lseek") ||
+		strings.HasPrefix(name, "fsync") || strings.HasPrefix(name, "fchmod") ||
+		strings.HasPrefix(name, "fchown") || strings.HasPrefix(name, "mount") ||
+		strings.HasPrefix(name, "umount") || strings.HasPrefix(name, "fallocate") ||
+		strings.HasPrefix(name, "truncate") || strings.HasPrefix(name, "ftruncate") ||
+		strings.HasPrefix(name, "link") || strings.HasPrefix(name, "symlink") ||
+		strings.HasPrefix(name, "readlink") || strings.HasPrefix(name, "getdents") ||
+		strings.HasPrefix(name, "pread") || strings.HasPrefix(name, "pwrite") ||
+		strings.HasPrefix(name, "sendfile") || strings.HasPrefix(name, "splice") ||
+		strings.HasPrefix(name, "copy_file_range") || strings.HasPrefix(name, "io_uring")
+}
+
+func isNet(name string) bool {
+	return strings.HasPrefix(name, "socket") || strings.HasPrefix(name, "bind") ||
+		strings.HasPrefix(name, "listen") || strings.HasPrefix(name, "accept") ||
+		strings.HasPrefix(name, "connect") || strings.HasPrefix(name, "send") ||
+		strings.HasPrefix(name, "recv") || strings.HasPrefix(name, "getsockopt") ||
+		strings.HasPrefix(name, "setsockopt") || strings.HasPrefix(name, "getsockname") ||
+		strings.HasPrefix(name, "getpeername") || strings.HasPrefix(name, "shutdown") ||
+		strings.HasPrefix(name, "socketpair")
+}
+
+func isMM(name string) bool {
+	return strings.HasPrefix(name, "mmap") || strings.HasPrefix(name, "munmap") ||
+		strings.HasPrefix(name, "mprotect") || strings.HasPrefix(name, "madvise") ||
+		strings.HasPrefix(name, "brk") || strings.HasPrefix(name, "mremap") ||
+		strings.HasPrefix(name, "msync") || strings.HasPrefix(name, "mincore") ||
+		strings.HasPrefix(name, "mlock") || strings.HasPrefix(name, "munlock") ||
+		strings.HasPrefix(name, "remap_file_pages") || strings.HasPrefix(name, "mbind") ||
+		strings.HasPrefix(name, "get_mempolicy") || strings.HasPrefix(name, "set_mempolicy")
+}
+
+func isIPC(name string) bool {
+	return strings.HasPrefix(name, "pipe") || strings.HasPrefix(name, "shmget") ||
+		strings.HasPrefix(name, "shmat") || strings.HasPrefix(name, "shmdt") ||
+		strings.HasPrefix(name, "shmctl") || strings.HasPrefix(name, "semget") ||
+		strings.HasPrefix(name, "semop") || strings.HasPrefix(name, "semctl") ||
+		strings.HasPrefix(name, "msgget") || strings.HasPrefix(name, "msgsnd") ||
+		strings.HasPrefix(name, "msgrcv") || strings.HasPrefix(name, "msgctl") ||
+		strings.HasPrefix(name, "futex") || strings.HasPrefix(name, "eventfd") ||
+		strings.HasPrefix(name, "signalfd") || strings.HasPrefix(name, "timerfd")
+}
+
+func isDevice(name string) bool {
+	return strings.HasPrefix(name, "ioctl") || strings.Contains(name, "$dev")
+}
+
+// NgramClient returns the MOCK BiGRU client for external use (retrain, etc).
+func (fuzzer *Fuzzer) NgramClient() *NgramClient {
+	return fuzzer.ngramClient
 }
 
 // DEzzerSnapshot returns the current DEzzer state, or nil if disabled.

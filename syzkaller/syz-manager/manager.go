@@ -1299,6 +1299,8 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 		go mgr.corpusInputHandler(corpusUpdates)
 		go mgr.corpusMinimization()
 		go mgr.fuzzerLoop(fuzzerObj)
+		// PROBE: Phase 8d — start MOCK model retrain loop (non-blocking, auto-detects server).
+		go mgr.mockModelRetrainLoop(fuzzerObj)
 		if mgr.dash != nil {
 			go mgr.dashboardReporter()
 			if mgr.cfg.Reproduce {
@@ -1440,6 +1442,27 @@ func (mgr *Manager) fuzzerLoop(fuzzer *fuzzer.Fuzzer) {
 			}
 			mgr.mu.Unlock()
 		}
+	}
+}
+
+// PROBE: Phase 8d — periodically trigger MOCK model retrain from corpus.
+// The Python gRPC server (tools/mock_model/server.py) must be started separately.
+// This goroutine auto-detects the server and triggers retrain every 2 hours.
+func (mgr *Manager) mockModelRetrainLoop(f *fuzzer.Fuzzer) {
+	// Wait 1 hour before first retrain attempt (allow corpus to build up).
+	time.Sleep(1 * time.Hour)
+
+	corpusDir := mgr.cfg.Workdir + "/corpus.db"
+	for {
+		// Try to retrain via the fuzzer's ngram client.
+		if client := f.NgramClient(); client != nil && client.Healthy() {
+			if err := client.Retrain(corpusDir); err != nil {
+				log.Logf(0, "PROBE: MOCK model retrain error: %v", err)
+			} else {
+				log.Logf(0, "PROBE: MOCK model retrain triggered (corpus: %s)", corpusDir)
+			}
+		}
+		time.Sleep(2 * time.Hour)
 	}
 }
 

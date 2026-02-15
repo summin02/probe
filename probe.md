@@ -574,7 +574,7 @@ clang -O2 -g -target bpf -D__TARGET_ARCH_x86 \
 cd syzkaller && make host  # Builds all host tools including syz-manager
 ```
 
-## Phase 8: Mutation & Coverage Innovation — IN PROGRESS (8a DONE)
+## Phase 8: Mutation & Coverage Innovation — DONE
 
 **Goal**: Smarter mutation strategies, multi-objective optimization, and enhanced exploit detection. Total overhead < 3.5%, no additional AI API cost.
 
@@ -594,19 +594,19 @@ cd syzkaller && make host  # Builds all host tools including syz-manager
 
 **Files modified**: `executor/ebpf/probe_ebpf.bpf.h`, `executor/ebpf/probe_ebpf.bpf.c`, `executor/executor_linux.h`, `executor/executor.cc`, `pkg/flatrpc/flatrpc.fbs`, `pkg/flatrpc/flatrpc.h`, `pkg/flatrpc/flatrpc.go`, `pkg/fuzzer/stats.go`, `pkg/fuzzer/fuzzer.go`, `tools/syz-ebpf-loader/main.go`
 
-### 8b. Operator-Pair Thompson Sampling (MuoFuzz)
+### 8b. Operator-Pair Thompson Sampling (MuoFuzz) — DONE
 
 **Goal**: Learn conditional probabilities between consecutive mutation operators — P(next_op success | prev_op).
 
 **Source**: MuoFuzz (FuzzBench/MAGMA). Extends DEzzer from 5 independent distributions to 5×5 = 25 pair distributions.
 
-**Design**: `alpha[prev_op][next_op]`, `beta[prev_op][next_op]` in DEzzer. Fallback to single-op TS when pair data < 50 records. Feature flag for on/off.
+**Design**: `pairAlpha[prev_op][next_op]`, `pairBeta[prev_op][next_op]` in DEzzer. Fallback to single-op TS when pair data < 50 records. Layered delta: pair TS → cluster TS → global TS (best available data used). `RecordResult` extended with `prevOp` parameter; `GetCurrentWeightsForPair` selects best TS layer. Decay applied uniformly across global/pair/cluster posteriors.
 
-**Overhead**: < 0.1% (25 floats = 200 bytes, O(1) lookup). **Expected impact**: +5-10% mutation efficiency.
+**Overhead**: < 0.1% (25 floats = 400 bytes, O(1) lookup). **Expected impact**: +5-10% mutation efficiency.
 
-**Files**: `pkg/fuzzer/dezzer.go` (pair stats), `prog/mutation.go` (track prev_op in loop)
+**Files modified**: `pkg/fuzzer/dezzer.go` (pair stats, `computePairTSDelta`, `computeTSDeltaLayered`), `pkg/fuzzer/job.go` (prevOp tracking in smashJob/focusJob), `pkg/fuzzer/fuzzer.go` (getAIMutateOpts signature change)
 
-### 8c. Multi-Objective Meta-Bandit (MobFuzz)
+### 8c. Multi-Objective Meta-Bandit (MobFuzz) — DONE
 
 **Goal**: Optimize for multiple objectives (coverage + memory_safety + priv_esc) instead of coverage alone.
 
@@ -614,57 +614,59 @@ cd syzkaller && make host  # Builds all host tools including syz-manager
 
 **Design**: Meta-bandit architecture with independent TS per objective:
 - Layer 0: UCB-1 selects objective (coverage / memory_safety / priv_esc) per 100-execution epoch
-- Layer 1: Objective-specific operator TS (each objective has its own DEzzer weights)
-- `memory_safety_score = uaf_base * 1.0 + cross_cache * 0.5 + double_free * 0.8`
-- Dynamic coverage minimum: 70% (first 2h) → 50% (2-8h) → 30% (8h+)
+- Layer 1: Objective-specific operator TS (each objective has its own `objAlpha`/`objBeta` arrays)
+- `memory_safety_reward = uaf_score/100 + cross_cache*0.5 + double_free*0.8 + write_to_freed*1.0`
+- Dynamic coverage floor: 70% (first 1h) → 50% (1-4h) → 30% (4h+)
+- `selectObjective()` forces coverage when fraction drops below floor
 
-**Sparse reward solution**: No reward amplification. Each objective has independent TS with own reward signal (event ratio within its epoch), eliminating the rare-event problem.
+**Sparse reward solution**: Each objective has independent TS with own reward signal. `RecordObjectiveReward` called from focusJob with eBPF-derived rewards.
 
-**AI integration**: AI strategy adjusts UCB priors (direction, not numerical hyperparameters), e.g., "increase memory_safety prior" → alpha_m += 10.
+**AI integration**: Objective status (current objective + counts) included in AI strategy prompt via DEzzerStatusData.
 
-**Overhead**: < 0.5%. **Expected impact**: +50-100% high-risk bug discovery. **Implementation order**: Last (after 8a/8b/8e/8f/8d stabilize).
+**Overhead**: < 0.5%. **Expected impact**: +50-100% high-risk bug discovery.
 
-**Risk mitigation**: Maximum 3 objectives. Feature flag. Layered separation from operator TS.
+**Files modified**: `pkg/fuzzer/dezzer.go` (objAlpha/objBeta/objRewards/objCounts, selectObjective UCB-1, epochLeft), `pkg/fuzzer/fuzzer.go` (recordObjectiveReward), `pkg/aitriage/aitriage.go` (DEzzerStatusData extended), `pkg/aitriage/prompt_strategy.go` (objective status in prompt)
 
-**Files**: `pkg/fuzzer/dezzer.go` (meta-bandit, per-objective TS), `pkg/fuzzer/fuzzer.go` (processResult routing), `pkg/aitriage/prompt_strategy.go` (objective weights in prompt)
-
-### 8d. MOCK Context-Aware Dependency (BiGRU)
+### 8d. MOCK Context-Aware Dependency (BiGRU) — DONE
 
 **Goal**: Learn syscall sequence dependencies via BiGRU language model for context-aware mutation.
 
-**Source**: MOCK (NDSS 2024). BiGRU (embed=64, hidden=128, ~1-2MB model). Trains on corpus programs that triggered new coverage. Retrains every 2 hours. Top-k=15 sampling. UCB-1 balances static vs. context-aware mutation.
+**Source**: MOCK (NDSS 2024). BiGRU (embed=64, hidden=128, ~1-2MB model). Trains on corpus programs that triggered new coverage. Retrains every 2 hours. Top-k=5 sampling. UCB-1 balances static vs. context-aware mutation.
 
-**Design**: Python subprocess (PyTorch) running as gRPC service. Go queries model during `insertCall()` with 50% probability (50% fallback to ChoiceTable). Health check every 5s, auto-restart on failure, fallback to existing ChoiceTable if Python down.
+**Design**: Python subprocess (PyTorch) running as TCP/JSON server (lightweight alternative to gRPC to avoid Go dependency). Go `NgramClient` connects to `tools/mock_model/server.py`. `insertCall()` uses `PredictCall` callback (50% chance) to get BiGRU prediction → `generateParticularCall()` for predicted syscall. Health check every 5s, auto-fallback to ChoiceTable if Python server unavailable. UCB-1 tracks BiGRU vs ChoiceTable success rates with 100-trial cold start exploration.
 
-**Overhead**: < 1% (inference < 1ms via GPU, RTX 3070 Ti). Training: ~30s every 2h (non-blocking). **Expected impact**: +3-12% coverage (paper average, not +32% maximum).
+**Manager integration**: `mockModelRetrainLoop` goroutine triggers retrain every 2 hours via NgramClient.
 
-**Cold start**: First hour uses static dependencies only (UCB-1 naturally handles this).
+**Overhead**: < 1% (inference < 1ms via GPU, RTX 3070 Ti). Training: ~30s every 2h (non-blocking). **Expected impact**: +3-12% coverage (paper average).
 
-**Files**: `tools/mock_model/` (new Python package), `pkg/fuzzer/ngram.go` (Go client + gRPC), `prog/mutation.go` (insertCall integration), `syz-manager/manager.go` (subprocess lifecycle)
+**Cold start**: First 100 trials alternate BiGRU/ChoiceTable for exploration; after that UCB-1 selects the better strategy.
 
-### 8e. Per-Cluster Thompson Sampling (SeamFuzz)
+**Files created**: `tools/mock_model/` (model.py, train.py, server.py, proto/mock.proto, requirements.txt), `pkg/fuzzer/ngram.go` (NgramClient TCP/JSON)
+**Files modified**: `prog/mutation.go` (PredictCall callback in MutateOpts + insertCall), `pkg/fuzzer/fuzzer.go` (ngramClient init + PredictCall wiring), `syz-manager/manager.go` (mockModelRetrainLoop)
+
+### 8e. Per-Cluster Thompson Sampling (SeamFuzz) — DONE
 
 **Goal**: Maintain separate DEzzer weights per kernel subsystem cluster.
 
 **Source**: SeamFuzz (ICSE 2023). Programs clustered by dominant syscall subsystem: fs, net, mm, ipc, device, other.
 
-**Design**: Classify program at mutation time via majority-vote over call names (O(n), < 0.001ms). No caching on `prog.Prog` (stale after mutation). DEzzer maintains per-cluster alpha/beta arrays. Fallback to global TS when cluster data < 100 records.
+**Design**: `classifyProgram()` uses majority-vote over syscall name prefixes (O(n), < 0.001ms). 6 clusters: ClusterFS/Net/MM/IPC/Device/Other. DEzzer maintains per-cluster `clusterAlpha[6][5]`/`clusterBeta[6][5]` arrays. `computeClusterTSDelta()` computes cluster-specific weights. Fallback to global TS when `clusterCount[c] < 100`. Classification done once per smashJob/focusJob, reused across all iterations.
 
 **Overhead**: < 0.2%. **Expected impact**: +3-8% crash discovery (subsystem-specific optimization).
 
-**Files**: `pkg/fuzzer/dezzer.go` (cluster state, per-cluster weights), `pkg/fuzzer/fuzzer.go` (classifyProgram)
+**Files modified**: `pkg/fuzzer/dezzer.go` (cluster alpha/beta/count, `computeClusterTSDelta`), `pkg/fuzzer/fuzzer.go` (`classifyProgram`, `isFS/isNet/isMM/isIPC/isDevice` helpers), `pkg/fuzzer/job.go` (cluster passed to RecordResult)
 
-### 8f. Effective Component Inference (lightweight SeqFuzz)
+### 8f. Effective Component Inference (lightweight SeqFuzz) — DONE
 
 **Goal**: Identify which syscalls in a program are essential for crash reproduction, focus mutation on them.
 
 **Source**: SeqFuzz (Inscrypt 2025) concept, adapted as lightweight dynamic ablation (no static ICFG analysis).
 
-**Design**: Focus job only. At focus job start: remove calls one-by-one, execute 3× each. Calls where removal prevents crash = essential. Focus mutation on essential calls (mutate_arg), replace non-essential calls (insert/splice). Skip ablation if program length < 5. Cache results per crash title.
+**Design**: Focus job only. `computeAblation()` at focus job start: baseline 3× execution for signal reference, then remove calls one-by-one, execute 3× each. Calls where removal loses >20% signal = essential. `essentialMutate()` blocks mutation of non-essential calls via noMutate map override. 50% chance per iteration: essential-focused mutation vs full-program mutation. Skip ablation if program length < 5. `ablationCache` (map[string][]bool) capped at 1000 entries.
 
-**Overhead**: 5-15 extra executions at focus job start (< 1s). **Expected impact**: 2-3x focus job efficiency.
+**Overhead**: n_calls × 3 executions at focus job start (< 3s for 20 calls). **Expected impact**: 2-3x focus job efficiency.
 
-**Files**: `pkg/fuzzer/job.go` (focusJob ablation phase), `pkg/fuzzer/fuzzer.go` (ablation cache)
+**Files modified**: `pkg/fuzzer/fuzzer.go` (`getOrComputeAblation`, `computeAblation`, `essentialMutate`, `ablationMu`/`ablationCache`), `pkg/fuzzer/job.go` (focusJob: essential mask + 50% essential-focused mutation)
 
 ### Phase 8 Implementation Order
 

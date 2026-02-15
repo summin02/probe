@@ -90,6 +90,23 @@ const (
 
 	// Phase 12 feature log.
 	dezzerFeatureLogSize = 100000
+
+	// Phase 8b: Op-pair conditional TS.
+	dezzerPairMinData = 50 // minimum observations before using pair TS (fallback to single-op)
+
+	// Phase 8e: Per-cluster TS.
+	numClusters          = 6
+	dezzerClusterMinData = 100 // per-cluster fallback threshold
+
+	// Phase 8c: Multi-objective meta-bandit.
+	NumObjectives     = 3
+	ObjCoverage       = 0
+	ObjMemorySafety   = 1
+	ObjPrivEsc        = 2
+	objEpochSize      = 100   // re-select objective every N records
+	objCovFloorInit   = 0.70  // initial coverage floor (first hour)
+	objCovFloorMid    = 0.50  // mid-phase floor (1-4 hours)
+	objCovFloorLate   = 0.30  // late-phase floor (4+ hours)
 )
 
 // opNames maps operator index to name.
@@ -150,6 +167,25 @@ type DEzzer struct {
 	featureLogIdx int
 	featureLogLen int
 
+	// Phase 8b: Op-pair conditional TS.
+	pairAlpha [dezzerNumOps][dezzerNumOps]float64 // pairAlpha[prevOp][nextOp]
+	pairBeta  [dezzerNumOps][dezzerNumOps]float64
+	pairCount [dezzerNumOps][dezzerNumOps]int64
+
+	// Phase 8e: Per-cluster TS.
+	clusterAlpha [numClusters][dezzerNumOps]float64
+	clusterBeta  [numClusters][dezzerNumOps]float64
+	clusterCount [numClusters]int64
+
+	// Phase 8c: Multi-objective meta-bandit.
+	objAlpha   [NumObjectives][dezzerNumOps]float64
+	objBeta    [NumObjectives][dezzerNumOps]float64
+	objRewards [NumObjectives]float64 // UCB-1 cumulative reward
+	objCounts  [NumObjectives]int64   // UCB-1 pull counts
+	currentObj int                    // current epoch objective
+	epochLeft  int                    // remaining records in this epoch
+	startTime  time.Time             // fuzzer start time (dynamic coverage floor)
+
 	logf func(level int, msg string, args ...any)
 }
 
@@ -191,11 +227,34 @@ func NewDEzzer(logf func(level int, msg string, args ...any)) *DEzzer {
 		logf:          logf,
 		lastDecayTime: time.Now(),
 		aiBaseWeights: WeightVector{1.0, 1.0, 1.0, 1.0, 1.0},
+		startTime:     time.Now(),
+		epochLeft:     objEpochSize,
 	}
 	// Initialize TS posteriors with uniform prior.
 	for i := 0; i < dezzerNumOps; i++ {
 		d.alpha[i] = dezzerAlphaFloor
 		d.beta[i] = dezzerBetaFloor
+	}
+	// Phase 8b: Initialize pair TS with uniform prior.
+	for i := 0; i < dezzerNumOps; i++ {
+		for j := 0; j < dezzerNumOps; j++ {
+			d.pairAlpha[i][j] = 1.0
+			d.pairBeta[i][j] = 1.0
+		}
+	}
+	// Phase 8e: Initialize cluster TS with uniform prior.
+	for c := 0; c < numClusters; c++ {
+		for i := 0; i < dezzerNumOps; i++ {
+			d.clusterAlpha[c][i] = 1.0
+			d.clusterBeta[c][i] = 1.0
+		}
+	}
+	// Phase 8c: Initialize multi-objective TS with uniform prior.
+	for o := 0; o < NumObjectives; o++ {
+		for i := 0; i < dezzerNumOps; i++ {
+			d.objAlpha[o][i] = 1.0
+			d.objBeta[o][i] = 1.0
+		}
 	}
 	// Initialize DE population around 1.0 (±5%).
 	rnd := rand.New(rand.NewSource(42))
@@ -206,7 +265,9 @@ func NewDEzzer(logf func(level int, msg string, args ...any)) *DEzzer {
 }
 
 // RecordResult records an operator execution result for TS+DE optimization.
-func (d *DEzzer) RecordResult(op string, covGainBits int, source FeedbackSource) {
+// Phase 8b: prevOp tracks the previous mutation operator for pair TS ("" = no pair).
+// Phase 8e: cluster is the kernel subsystem cluster index (-1 = global only).
+func (d *DEzzer) RecordResult(op, prevOp string, covGainBits int, source FeedbackSource, cluster int) {
 	idx := opNameToIndex(op)
 	if idx < 0 {
 		return
@@ -243,6 +304,36 @@ func (d *DEzzer) RecordResult(op string, covGainBits int, source FeedbackSource)
 		d.beta[idx] += weight
 	}
 
+	// Phase 8b: Update pair TS if we have a valid prevOp.
+	prevIdx := opNameToIndex(prevOp)
+	if prevIdx >= 0 {
+		if success {
+			d.pairAlpha[prevIdx][idx] += weight
+		} else {
+			d.pairBeta[prevIdx][idx] += weight
+		}
+		d.pairCount[prevIdx][idx]++
+	}
+
+	// Phase 8e: Update per-cluster TS if valid cluster.
+	if cluster >= 0 && cluster < numClusters {
+		if success {
+			d.clusterAlpha[cluster][idx] += weight
+		} else {
+			d.clusterBeta[cluster][idx] += weight
+		}
+		d.clusterCount[cluster]++
+	}
+
+	// Phase 8c: Update objective-specific TS.
+	if d.currentObj >= 0 && d.currentObj < NumObjectives {
+		if success {
+			d.objAlpha[d.currentObj][idx] += weight
+		} else {
+			d.objBeta[d.currentObj][idx] += weight
+		}
+	}
+
 	// 4. Feature log for Phase 12 ML.
 	d.recordFeature(idx, covGainBits, success, source)
 
@@ -273,6 +364,13 @@ func (d *DEzzer) RecordResult(op string, covGainBits int, source FeedbackSource)
 	if d.totalRecords%dezzerEvolveEvery == 0 && d.warmupDone {
 		d.recalcDEFitness()
 		d.evolveDEOneGeneration()
+	}
+
+	// Phase 8c: Epoch management — re-select objective periodically.
+	d.epochLeft--
+	if d.epochLeft <= 0 && d.warmupDone {
+		d.currentObj = d.selectObjective()
+		d.epochLeft = objEpochSize
 	}
 }
 
@@ -323,6 +421,125 @@ func (d *DEzzer) GetCurrentWeights() prog.MutateOpts {
 		MutateArgWeight:    maxInt(1, int(float64(defaults.MutateArgWeight)*d.aiBaseWeights.MutateArg*tsDelta.MutateArg*deCorr.MutateArg)),
 		RemoveCallWeight:   maxInt(1, int(float64(defaults.RemoveCallWeight)*d.aiBaseWeights.Remove*tsDelta.Remove*deCorr.Remove)),
 	}
+}
+
+// GetCurrentWeightsForPair returns weights considering pair TS and cluster TS.
+// Phase 8b: If prevOp has enough pair data, use pair-conditioned TS delta.
+// Phase 8e: If cluster has enough data, use cluster-specific TS delta.
+func (d *DEzzer) GetCurrentWeightsForPair(prevOp string, cluster int) prog.MutateOpts {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	defaults := prog.DefaultMutateOpts
+
+	// During warm-up or exploration, use neutral delta (Default × AI Base only).
+	if !d.warmupDone || d.explorationMode {
+		return prog.MutateOpts{
+			ExpectedIterations: defaults.ExpectedIterations,
+			MutateArgCount:     defaults.MutateArgCount,
+			SquashWeight:       maxInt(1, int(float64(defaults.SquashWeight)*d.aiBaseWeights.Squash)),
+			SpliceWeight:       maxInt(1, int(float64(defaults.SpliceWeight)*d.aiBaseWeights.Splice)),
+			InsertWeight:       maxInt(1, int(float64(defaults.InsertWeight)*d.aiBaseWeights.Insert)),
+			MutateArgWeight:    maxInt(1, int(float64(defaults.MutateArgWeight)*d.aiBaseWeights.MutateArg)),
+			RemoveCallWeight:   maxInt(1, int(float64(defaults.RemoveCallWeight)*d.aiBaseWeights.Remove)),
+		}
+	}
+
+	// Compute TS delta: prefer pair TS > cluster TS > global TS.
+	tsDelta := d.computeTSDeltaLayered(prevOp, cluster)
+	deCorr := d.population[d.bestIdx]
+
+	return prog.MutateOpts{
+		ExpectedIterations: defaults.ExpectedIterations,
+		MutateArgCount:     defaults.MutateArgCount,
+		SquashWeight:       maxInt(1, int(float64(defaults.SquashWeight)*d.aiBaseWeights.Squash*tsDelta.Squash*deCorr.Squash)),
+		SpliceWeight:       maxInt(1, int(float64(defaults.SpliceWeight)*d.aiBaseWeights.Splice*tsDelta.Splice*deCorr.Splice)),
+		InsertWeight:       maxInt(1, int(float64(defaults.InsertWeight)*d.aiBaseWeights.Insert*tsDelta.Insert*deCorr.Insert)),
+		MutateArgWeight:    maxInt(1, int(float64(defaults.MutateArgWeight)*d.aiBaseWeights.MutateArg*tsDelta.MutateArg*deCorr.MutateArg)),
+		RemoveCallWeight:   maxInt(1, int(float64(defaults.RemoveCallWeight)*d.aiBaseWeights.Remove*tsDelta.Remove*deCorr.Remove)),
+	}
+}
+
+// computeTSDeltaLayered computes TS delta using the best available data:
+// pair TS (Phase 8b) → cluster TS (Phase 8e) → global TS (fallback).
+func (d *DEzzer) computeTSDeltaLayered(prevOp string, cluster int) WeightVector {
+	prevIdx := opNameToIndex(prevOp)
+
+	// Try pair TS first (Phase 8b).
+	if prevIdx >= 0 {
+		totalPairData := int64(0)
+		for j := 0; j < dezzerNumOps; j++ {
+			totalPairData += d.pairCount[prevIdx][j]
+		}
+		if totalPairData >= dezzerPairMinData {
+			return d.computePairTSDelta(prevIdx)
+		}
+	}
+
+	// Try cluster TS (Phase 8e).
+	if cluster >= 0 && cluster < numClusters && d.clusterCount[cluster] >= dezzerClusterMinData {
+		return d.computeClusterTSDelta(cluster)
+	}
+
+	// Fallback to global TS.
+	return d.computeTSDelta()
+}
+
+// computePairTSDelta computes TS delta conditioned on prevOp.
+func (d *DEzzer) computePairTSDelta(prevIdx int) WeightVector {
+	var probs [dezzerNumOps]float64
+	for j := 0; j < dezzerNumOps; j++ {
+		probs[j] = d.pairAlpha[prevIdx][j] / (d.pairAlpha[prevIdx][j] + d.pairBeta[prevIdx][j])
+	}
+	return d.probsToTSDelta(probs)
+}
+
+// computeClusterTSDelta computes TS delta for a specific kernel subsystem cluster.
+func (d *DEzzer) computeClusterTSDelta(cluster int) WeightVector {
+	var probs [dezzerNumOps]float64
+	for i := 0; i < dezzerNumOps; i++ {
+		probs[i] = d.clusterAlpha[cluster][i] / (d.clusterAlpha[cluster][i] + d.clusterBeta[cluster][i])
+	}
+	return d.probsToTSDelta(probs)
+}
+
+// probsToTSDelta converts success probabilities into a TS delta weight vector.
+func (d *DEzzer) probsToTSDelta(probs [dezzerNumOps]float64) WeightVector {
+	meanProb := 0.0
+	for _, p := range probs {
+		meanProb += p
+	}
+	meanProb /= float64(dezzerNumOps)
+
+	lo := 1.0 - dezzerTSDeltaLimit
+	hi := 1.0 + dezzerTSDeltaLimit
+	var arr [dezzerNumOps]float64
+
+	maxProb := 0.0
+	for _, p := range probs {
+		if p > maxProb {
+			maxProb = p
+		}
+	}
+
+	if meanProb < dezzerSaturationThreshold {
+		// Saturation mode.
+		if maxProb < 1e-10 {
+			maxProb = 1e-10
+		}
+		for i := 0; i < dezzerNumOps; i++ {
+			relative := probs[i] / maxProb
+			arr[i] = clampFloat(0.6+0.8*relative, lo, hi)
+		}
+	} else {
+		if meanProb < 1e-10 {
+			meanProb = 1e-10
+		}
+		for i := 0; i < dezzerNumOps; i++ {
+			arr[i] = clampFloat(probs[i]/meanProb, lo, hi)
+		}
+	}
+	return arrToVec(arr)
 }
 
 // SetAIBaseWeights updates the AI base weights with selective reset.
@@ -427,6 +644,16 @@ type DEzzerSnapshot struct {
 	TSAlpha      map[string]float64 `json:"ts_alpha"`
 	TSBeta       map[string]float64 `json:"ts_beta"`
 	TSConfidence map[string]float64 `json:"ts_confidence"`
+
+	// Phase 8b: Pair TS success rates.
+	PairSuccessRates map[string]float64 `json:"pair_success_rates,omitempty"` // "prev->next" → rate
+
+	// Phase 8e: Cluster TS summary.
+	ClusterCounts map[string]int64 `json:"cluster_counts,omitempty"` // cluster_name → count
+
+	// Phase 8c: Multi-objective status.
+	CurrentObjective string         `json:"current_objective,omitempty"`
+	ObjectiveCounts  map[string]int64 `json:"objective_counts,omitempty"`
 }
 
 func (d *DEzzer) Snapshot() DEzzerSnapshot {
@@ -474,6 +701,35 @@ func (d *DEzzer) Snapshot() DEzzerSnapshot {
 		snap.TSAlpha[name] = d.alpha[i]
 		snap.TSBeta[name] = d.beta[i]
 		snap.TSConfidence[name] = d.alpha[i] + d.beta[i]
+	}
+
+	// Phase 8b: Pair TS success rates.
+	snap.PairSuccessRates = make(map[string]float64)
+	for i := 0; i < dezzerNumOps; i++ {
+		for j := 0; j < dezzerNumOps; j++ {
+			if d.pairCount[i][j] > 0 {
+				rate := d.pairAlpha[i][j] / (d.pairAlpha[i][j] + d.pairBeta[i][j])
+				key := opNames[i] + "->" + opNames[j]
+				snap.PairSuccessRates[key] = rate
+			}
+		}
+	}
+
+	// Phase 8e: Cluster counts.
+	clusterNames := [numClusters]string{"fs", "net", "mm", "ipc", "device", "other"}
+	snap.ClusterCounts = make(map[string]int64)
+	for c := 0; c < numClusters; c++ {
+		if d.clusterCount[c] > 0 {
+			snap.ClusterCounts[clusterNames[c]] = d.clusterCount[c]
+		}
+	}
+
+	// Phase 8c: Multi-objective status.
+	objNames := [NumObjectives]string{"coverage", "memory_safety", "priv_esc"}
+	snap.CurrentObjective = objNames[d.currentObj]
+	snap.ObjectiveCounts = make(map[string]int64)
+	for i := 0; i < NumObjectives; i++ {
+		snap.ObjectiveCounts[objNames[i]] = d.objCounts[i]
 	}
 
 	return snap
@@ -567,6 +823,20 @@ func (d *DEzzer) maybeDecay() {
 	for i := 0; i < dezzerNumOps; i++ {
 		d.alpha[i] = math.Max(dezzerAlphaFloor, d.alpha[i]*factor)
 		d.beta[i] = math.Max(dezzerBetaFloor, d.beta[i]*factor)
+	}
+	// Phase 8b: Decay pair TS.
+	for i := 0; i < dezzerNumOps; i++ {
+		for j := 0; j < dezzerNumOps; j++ {
+			d.pairAlpha[i][j] = math.Max(1.0, d.pairAlpha[i][j]*factor)
+			d.pairBeta[i][j] = math.Max(1.0, d.pairBeta[i][j]*factor)
+		}
+	}
+	// Phase 8e: Decay cluster TS.
+	for c := 0; c < numClusters; c++ {
+		for i := 0; i < dezzerNumOps; i++ {
+			d.clusterAlpha[c][i] = math.Max(1.0, d.clusterAlpha[c][i]*factor)
+			d.clusterBeta[c][i] = math.Max(1.0, d.clusterBeta[c][i]*factor)
+		}
 	}
 	d.lastDecayTime = now
 }
@@ -882,6 +1152,76 @@ func (d *DEzzer) recordFeature(opIdx int, covGain int, success bool, source Feed
 	if d.featureLogLen < dezzerFeatureLogSize {
 		d.featureLogLen++
 	}
+}
+
+// --- Phase 8c: Multi-objective meta-bandit ---
+
+// selectObjective uses UCB-1 to choose the next objective.
+func (d *DEzzer) selectObjective() int {
+	totalPulls := int64(0)
+	for _, c := range d.objCounts {
+		totalPulls += c
+	}
+
+	// Ensure each objective is tried at least once.
+	for i := 0; i < NumObjectives; i++ {
+		if d.objCounts[i] == 0 {
+			return i
+		}
+	}
+
+	// Dynamic coverage floor: coverage must get at least this fraction of selection.
+	hours := time.Since(d.startTime).Hours()
+	covFloor := objCovFloorInit
+	if hours > 4 {
+		covFloor = objCovFloorLate
+	} else if hours > 1 {
+		covFloor = objCovFloorMid
+	}
+
+	// If coverage is under-selected, force it.
+	covFrac := float64(d.objCounts[ObjCoverage]) / float64(totalPulls)
+	if covFrac < covFloor {
+		return ObjCoverage
+	}
+
+	// UCB-1: argmax(reward/count + sqrt(2*ln(totalCount)/count))
+	bestObj := 0
+	bestScore := -1.0
+	lnTotal := math.Log(float64(totalPulls))
+	for i := 0; i < NumObjectives; i++ {
+		avgReward := d.objRewards[i] / float64(d.objCounts[i])
+		exploration := math.Sqrt(2.0 * lnTotal / float64(d.objCounts[i]))
+		score := avgReward + exploration
+		if score > bestScore {
+			bestScore = score
+			bestObj = i
+		}
+	}
+
+	if d.logf != nil {
+		objNames := [NumObjectives]string{"coverage", "memory_safety", "priv_esc"}
+		d.logf(0, "PROBE: DEzzer objective selected: %s (counts: cov=%d mem=%d priv=%d)",
+			objNames[bestObj], d.objCounts[ObjCoverage], d.objCounts[ObjMemorySafety], d.objCounts[ObjPrivEsc])
+	}
+	return bestObj
+}
+
+// RecordObjectiveReward records a reward for the current objective.
+func (d *DEzzer) RecordObjectiveReward(reward float64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.currentObj >= 0 && d.currentObj < NumObjectives {
+		d.objRewards[d.currentObj] += reward
+		d.objCounts[d.currentObj]++
+	}
+}
+
+// CurrentObjective returns the currently active objective.
+func (d *DEzzer) CurrentObjective() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.currentObj
 }
 
 // --- Utility functions ---

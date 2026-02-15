@@ -164,6 +164,48 @@ func buildStrategyPrompt(snapshot *FuzzingSnapshot) (string, string) {
 				sb.WriteString(fmt.Sprintf("%s=%d ", name, w))
 			}
 		}
+		// Phase 8b: Top pair TS success rates (if available).
+		if len(ds.PairSuccessRates) > 0 {
+			sb.WriteString("\n  Op-pair success rates (top 5): ")
+			type pairKV struct {
+				Key  string
+				Rate float64
+			}
+			var pairs []pairKV
+			for k, v := range ds.PairSuccessRates {
+				pairs = append(pairs, pairKV{k, v})
+			}
+			sort.Slice(pairs, func(i, j int) bool { return pairs[i].Rate > pairs[j].Rate })
+			shown := 5
+			if len(pairs) < shown {
+				shown = len(pairs)
+			}
+			for _, p := range pairs[:shown] {
+				sb.WriteString(fmt.Sprintf("%s=%.1f%% ", p.Key, p.Rate*100))
+			}
+		}
+		// Phase 8e: Cluster distribution.
+		if len(ds.ClusterCounts) > 0 {
+			sb.WriteString("\n  Subsystem clusters: ")
+			for _, name := range []string{"fs", "net", "mm", "ipc", "device", "other"} {
+				if c, ok := ds.ClusterCounts[name]; ok {
+					sb.WriteString(fmt.Sprintf("%s=%d ", name, c))
+				}
+			}
+		}
+		// Phase 8c: Multi-objective status.
+		if ds.CurrentObjective != "" {
+			sb.WriteString(fmt.Sprintf("\n  Current objective: %s", ds.CurrentObjective))
+			if len(ds.ObjectiveCounts) > 0 {
+				sb.WriteString(" (counts: ")
+				for _, name := range []string{"coverage", "memory_safety", "priv_esc"} {
+					if c, ok := ds.ObjectiveCounts[name]; ok {
+						sb.WriteString(fmt.Sprintf("%s=%d ", name, c))
+					}
+				}
+				sb.WriteString(")")
+			}
+		}
 		sb.WriteString("\n\n")
 	}
 

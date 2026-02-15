@@ -144,6 +144,13 @@ type DEzzerStatusData struct {
 	DECorrection map[string]float64 `json:"de_correction,omitempty"`
 	Saturated    bool               `json:"saturated,omitempty"`
 	WarmupDone   bool               `json:"warmup_done,omitempty"`
+	// Phase 8b: Pair TS success rates.
+	PairSuccessRates map[string]float64 `json:"pair_success_rates,omitempty"`
+	// Phase 8e: Cluster counts.
+	ClusterCounts map[string]int64 `json:"cluster_counts,omitempty"`
+	// Phase 8c: Multi-objective status.
+	CurrentObjective string           `json:"current_objective,omitempty"`
+	ObjectiveCounts  map[string]int64 `json:"objective_counts,omitempty"`
 }
 
 // FocusResultData is a serializable focus job result for AI prompts.

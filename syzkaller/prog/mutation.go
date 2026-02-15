@@ -47,6 +47,10 @@ type MutateOpts struct {
 	InsertWeight       int
 	MutateArgWeight    int
 	RemoveCallWeight   int
+	// PROBE: Phase 8d — optional BiGRU prediction callback for insertCall().
+	// Takes the current call names context and returns (predicted_syscall_name, confidence).
+	// If nil or returns ("", 0), the default ChoiceTable selection is used.
+	PredictCall func(calls []string) (string, float64)
 }
 
 func (o MutateOpts) weight() int {
@@ -213,6 +217,27 @@ func (ctx *mutator) insertCall() bool {
 		c = p.Calls[idx]
 	}
 	s := analyze(ctx.ct, ctx.corpus, p, c)
+
+	// PROBE: Phase 8d — try BiGRU prediction for context-aware call insertion.
+	// 50% chance: if prediction available, generate that specific call.
+	if ctx.opts.PredictCall != nil && r.nOutOf(1, 2) {
+		callNames := make([]string, len(p.Calls))
+		for i, call := range p.Calls {
+			callNames[i] = call.Meta.Name
+		}
+		if predicted, conf := ctx.opts.PredictCall(callNames); predicted != "" && conf > 0 {
+			if meta, ok := p.Target.SyscallMap[predicted]; ok &&
+				!meta.Attrs.Disabled && !meta.Attrs.NoGenerate {
+				calls := r.generateParticularCall(s, meta)
+				p.insertBefore(c, calls)
+				for len(p.Calls) > ctx.ncalls {
+					p.RemoveCall(idx)
+				}
+				return true
+			}
+		}
+	}
+
 	calls := r.generateCall(s, p, idx)
 	p.insertBefore(c, calls)
 	for len(p.Calls) > ctx.ncalls {

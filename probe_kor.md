@@ -532,7 +532,7 @@ clang -O2 -g -target bpf -D__TARGET_ARCH_x86 \
 cd syzkaller && make host
 ```
 
-## Phase 8: 뮤테이션 & 커버리지 혁신 — 진행 중 (8a 완료)
+## Phase 8: 뮤테이션 & 커버리지 혁신 — 완료
 
 **목표**: 스마트 뮤테이션 전략, 다목적 최적화, 향상된 exploit 탐지. 총 오버헤드 < 3.5%, 추가 AI API 비용 없음.
 
@@ -552,19 +552,19 @@ cd syzkaller && make host
 
 **수정 파일**: `executor/ebpf/probe_ebpf.bpf.h`, `executor/ebpf/probe_ebpf.bpf.c`, `executor/executor_linux.h`, `executor/executor.cc`, `pkg/flatrpc/flatrpc.fbs`, `pkg/flatrpc/flatrpc.h`, `pkg/flatrpc/flatrpc.go`, `pkg/fuzzer/stats.go`, `pkg/fuzzer/fuzzer.go`, `tools/syz-ebpf-loader/main.go`
 
-### 8b. 연산자-쌍 Thompson Sampling (MuoFuzz)
+### 8b. 연산자-쌍 Thompson Sampling (MuoFuzz) — 완료
 
 **목표**: 연속 뮤테이션 연산자 간 조건부 확률 학습 — P(next_op 성공 | prev_op).
 
 **출처**: MuoFuzz (FuzzBench/MAGMA). DEzzer를 5개 독립 분포에서 5×5 = 25개 쌍 분포로 확장.
 
-**설계**: DEzzer에 `alpha[prev_op][next_op]`, `beta[prev_op][next_op]`. 쌍 데이터 < 50건이면 단일 op TS로 fallback. Feature flag로 on/off 가능.
+**설계**: `pairAlpha[prev_op][next_op]`, `pairBeta[prev_op][next_op]`. 쌍 데이터 < 50건이면 단일 op TS로 fallback. 계층적 delta: pair TS → cluster TS → global TS (최적 데이터 자동 선택). `RecordResult`에 `prevOp` 파라미터 추가; `GetCurrentWeightsForPair`가 최적 TS 레이어 선택. Decay는 global/pair/cluster 모두에 균일 적용.
 
-**오버헤드**: < 0.1% (25개 float = 200 bytes, O(1) lookup). **기대 효과**: +5-10% 뮤테이션 효율.
+**오버헤드**: < 0.1% (25개 float = 400 bytes, O(1) lookup). **기대 효과**: +5-10% 뮤테이션 효율.
 
-**파일**: `pkg/fuzzer/dezzer.go` (쌍 통계), `prog/mutation.go` (루프 내 prev_op 추적)
+**수정 파일**: `pkg/fuzzer/dezzer.go` (쌍 통계, `computePairTSDelta`, `computeTSDeltaLayered`), `pkg/fuzzer/job.go` (smashJob/focusJob에서 prevOp 추적), `pkg/fuzzer/fuzzer.go` (getAIMutateOpts 시그니처 변경)
 
-### 8c. 다목적 메타-밴딧 (MobFuzz)
+### 8c. 다목적 메타-밴딧 (MobFuzz) — 완료
 
 **목표**: 커버리지만이 아닌 다목적 최적화 (coverage + memory_safety + priv_esc).
 
@@ -572,57 +572,59 @@ cd syzkaller && make host
 
 **설계**: 목표별 독립 TS를 가진 메타-밴딧 아키텍처:
 - Layer 0: UCB-1이 목표 선택 (coverage / memory_safety / priv_esc), 100실행 epoch 단위
-- Layer 1: 목표별 operator TS (각 목표가 자체 DEzzer 가중치 보유)
-- `memory_safety_score = uaf_base * 1.0 + cross_cache * 0.5 + double_free * 0.8`
-- 동적 coverage 하한: 70% (처음 2시간) → 50% (2-8시간) → 30% (8시간+)
+- Layer 1: 목표별 operator TS (각 목표가 자체 `objAlpha`/`objBeta` 보유)
+- `memory_safety_reward = uaf_score/100 + cross_cache*0.5 + double_free*0.8 + write_to_freed*1.0`
+- 동적 coverage 하한: 70% (1시간) → 50% (1-4시간) → 30% (4시간+)
+- `selectObjective()`가 coverage fraction이 floor 미만이면 강제 선택
 
-**희소 보상 해결**: 보상 증폭 없음. 각 목표가 자체 보상 신호 (epoch 내 이벤트 비율)로 독립 TS 운영, 희귀 이벤트 문제 구조적 해결.
+**희소 보상 해결**: 각 목표가 자체 보상 신호로 독립 TS 운영. `RecordObjectiveReward`가 focusJob에서 eBPF 기반 보상 전달.
 
-**AI 연동**: AI strategy가 UCB prior 방향 조정 (수치가 아닌 방향), 예: "memory_safety prior 올려" → alpha_m += 10.
+**AI 연동**: 목표 상태 (현재 목표 + 카운트)가 DEzzerStatusData를 통해 AI strategy prompt에 포함.
 
-**오버헤드**: < 0.5%. **기대 효과**: +50-100% 고위험 버그 발견. **구현 순서**: 마지막 (8a/8b/8e/8f/8d 안정화 후).
+**오버헤드**: < 0.5%. **기대 효과**: +50-100% 고위험 버그 발견.
 
-**리스크 대응**: 최대 3개 목표. Feature flag. 계층적 분리.
+**수정 파일**: `pkg/fuzzer/dezzer.go` (objAlpha/objBeta/objRewards/objCounts, selectObjective UCB-1, epochLeft), `pkg/fuzzer/fuzzer.go` (recordObjectiveReward), `pkg/aitriage/aitriage.go` (DEzzerStatusData 확장), `pkg/aitriage/prompt_strategy.go` (목표 상태 포함)
 
-**파일**: `pkg/fuzzer/dezzer.go` (메타-밴딧, 목표별 TS), `pkg/fuzzer/fuzzer.go` (processResult 라우팅), `pkg/aitriage/prompt_strategy.go` (목표 가중치)
-
-### 8d. MOCK 컨텍스트 인식 의존성 (BiGRU)
+### 8d. MOCK 컨텍스트 인식 의존성 (BiGRU) — 완료
 
 **목표**: BiGRU 언어 모델로 syscall 시퀀스 의존성 학습 → 컨텍스트 인식 뮤테이션.
 
-**출처**: MOCK (NDSS 2024). BiGRU (embed=64, hidden=128, ~1-2MB 모델). 새 커버리지를 트리거한 코퍼스 프로그램으로 학습. 2시간마다 재학습. Top-k=15 샘플링. UCB-1이 정적 vs 컨텍스트 인식 뮤테이션 밸런싱.
+**출처**: MOCK (NDSS 2024). BiGRU (embed=64, hidden=128, ~1-2MB 모델). 새 커버리지를 트리거한 코퍼스 프로그램으로 학습. 2시간마다 재학습. Top-k=5 샘플링. UCB-1이 정적 vs 컨텍스트 인식 뮤테이션 밸런싱.
 
-**설계**: Python subprocess (PyTorch) gRPC 서비스. Go가 `insertCall()`에서 50% 확률로 모델 쿼리 (50% fallback ChoiceTable). 5초마다 health check, 장애 시 자동 재시작 + ChoiceTable fallback.
+**설계**: Python subprocess (PyTorch) TCP/JSON 서버 (Go gRPC 의존성 회피를 위한 경량 대안). Go `NgramClient`가 `tools/mock_model/server.py`에 연결. `insertCall()`에서 `PredictCall` 콜백 (50% 확률)으로 BiGRU 예측 → 예측된 syscall에 대해 `generateParticularCall()`. 5초마다 health check, 서버 불가 시 ChoiceTable 자동 fallback. UCB-1이 BiGRU vs ChoiceTable 성공률 추적 (100회 cold start 탐색).
 
-**오버헤드**: < 1% (GPU 추론 < 1ms, RTX 3070 Ti). 학습: 2시간마다 ~30초 (논블로킹). **기대 효과**: +3-12% 커버리지 (논문 평균, +32% 최대치 아님).
+**매니저 연동**: `mockModelRetrainLoop` goroutine이 2시간마다 NgramClient 통해 retrain 트리거.
 
-**콜드 스타트**: 첫 1시간은 정적 의존성만 사용 (UCB-1이 자연스럽게 처리).
+**오버헤드**: < 1% (GPU 추론 < 1ms, RTX 3070 Ti). 학습: 2시간마다 ~30초 (논블로킹). **기대 효과**: +3-12% 커버리지 (논문 평균).
 
-**파일**: `tools/mock_model/` (신규 Python 패키지), `pkg/fuzzer/ngram.go` (Go 클라이언트 + gRPC), `prog/mutation.go` (insertCall 통합), `syz-manager/manager.go` (subprocess 생명주기)
+**콜드 스타트**: 100회까지 BiGRU/ChoiceTable 교대 탐색; 이후 UCB-1이 우수 전략 선택.
 
-### 8e. 클러스터별 Thompson Sampling (SeamFuzz)
+**생성 파일**: `tools/mock_model/` (model.py, train.py, server.py, proto/mock.proto, requirements.txt), `pkg/fuzzer/ngram.go` (NgramClient TCP/JSON)
+**수정 파일**: `prog/mutation.go` (MutateOpts에 PredictCall 콜백 + insertCall), `pkg/fuzzer/fuzzer.go` (ngramClient 초기화 + PredictCall 연결), `syz-manager/manager.go` (mockModelRetrainLoop)
+
+### 8e. 클러스터별 Thompson Sampling (SeamFuzz) — 완료
 
 **목표**: 커널 서브시스템 클러스터별 별도 DEzzer 가중치 유지.
 
 **출처**: SeamFuzz (ICSE 2023). 프로그램을 주요 syscall 서브시스템으로 클러스터링: fs, net, mm, ipc, device, other.
 
-**설계**: 뮤테이션 시 다수결 기반 분류 (O(n), < 0.001ms). `prog.Prog`에 캐싱하지 않음 (뮤테이션 후 stale). DEzzer가 클러스터별 alpha/beta 유지. 클러스터 데이터 < 100건이면 전역 TS fallback.
+**설계**: `classifyProgram()`이 syscall name prefix 기반 다수결 분류 (O(n), < 0.001ms). 6개 클러스터: ClusterFS/Net/MM/IPC/Device/Other. DEzzer가 클러스터별 `clusterAlpha[6][5]`/`clusterBeta[6][5]` 유지. `computeClusterTSDelta()`로 클러스터별 가중치 계산. `clusterCount[c] < 100`이면 전역 TS fallback. 분류는 smashJob/focusJob에서 1회만, 전체 iteration에 재사용.
 
 **오버헤드**: < 0.2%. **기대 효과**: +3-8% 크래시 발견 (서브시스템별 최적화).
 
-**파일**: `pkg/fuzzer/dezzer.go` (클러스터 상태, 클러스터별 가중치), `pkg/fuzzer/fuzzer.go` (classifyProgram)
+**수정 파일**: `pkg/fuzzer/dezzer.go` (cluster alpha/beta/count, `computeClusterTSDelta`), `pkg/fuzzer/fuzzer.go` (`classifyProgram`, `isFS/isNet/isMM/isIPC/isDevice`), `pkg/fuzzer/job.go` (RecordResult에 cluster 전달)
 
-### 8f. 유효 컴포넌트 추론 (경량 SeqFuzz)
+### 8f. 유효 컴포넌트 추론 (경량 SeqFuzz) — 완료
 
 **목표**: 프로그램 내 크래시 재현에 필수적인 syscall 식별, 해당 call에 뮤테이션 집중.
 
 **출처**: SeqFuzz (Inscrypt 2025) 개념, 정적 ICFG 분석 없이 동적 ablation으로 경량화.
 
-**설계**: Focus job 전용. Focus job 시작 시: call 하나씩 제거, 3회 실행. 제거 시 크래시 안 나면 = essential. essential call은 mutate_arg 집중, non-essential call은 insert/splice로 교체. 프로그램 길이 < 5이면 ablation skip. 크래시 타이틀 기준 결과 캐싱.
+**설계**: Focus job 전용. `computeAblation()`이 focus job 시작 시: baseline 3회 실행으로 signal 참조값 수집, call 하나씩 제거 후 3회 실행. signal 20% 이상 손실 시 = essential. `essentialMutate()`가 non-essential call의 mutation을 noMutate map으로 차단. iteration당 50% 확률: essential 집중 mutation vs 전체 프로그램 mutation. 프로그램 길이 < 5이면 ablation skip. `ablationCache` (map[string][]bool) 1000개 제한.
 
-**오버헤드**: Focus job 시작 시 5-15회 추가 실행 (< 1초). **기대 효과**: Focus job 효율 2-3배 향상.
+**오버헤드**: n_calls × 3 실행 (20 call 기준 < 3초). **기대 효과**: Focus job 효율 2-3배 향상.
 
-**파일**: `pkg/fuzzer/job.go` (focusJob ablation 단계), `pkg/fuzzer/fuzzer.go` (ablation 캐시)
+**수정 파일**: `pkg/fuzzer/fuzzer.go` (`getOrComputeAblation`, `computeAblation`, `essentialMutate`, `ablationMu`/`ablationCache`), `pkg/fuzzer/job.go` (focusJob: essential mask + 50% essential 집중 mutation)
 
 ### Phase 8 구현 순서
 

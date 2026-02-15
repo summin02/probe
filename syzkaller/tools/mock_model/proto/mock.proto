@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package mock;
+
+option go_package = "github.com/google/syzkaller/tools/mock_model/proto";
+
+service MockModel {
+  // PredictNext returns the most likely next syscall given a context sequence.
+  rpc PredictNext (PredictRequest) returns (PredictResponse);
+  // Health check.
+  rpc Health (HealthRequest) returns (HealthResponse);
+  // Trigger retraining from fresh corpus.
+  rpc Retrain (RetrainRequest) returns (RetrainResponse);
+}
+
+message PredictRequest {
+  repeated string calls = 1;  // Sequence of recent syscall names.
+}
+
+message PredictResponse {
+  string predicted_call = 1;   // Most likely next syscall.
+  float confidence = 2;        // Model confidence [0, 1].
+  repeated CandidateCall top_k = 3;  // Top-k predictions.
+}
+
+message CandidateCall {
+  string name = 1;
+  float score = 2;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool healthy = 1;
+  int64 vocab_size = 2;
+  int64 training_samples = 3;
+  string model_version = 4;
+}
+
+message RetrainRequest {
+  string corpus_dir = 1;  // Path to syzkaller corpus directory.
+}
+
+message RetrainResponse {
+  bool success = 1;
+  string message = 2;
+  int64 samples_used = 3;
+}

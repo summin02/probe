@@ -467,6 +467,8 @@ func (job *smashJob) run(fuzzer *Fuzzer) {
 	const iters = 25
 	rnd := fuzzer.rand()
 	lastSignalLen := fuzzer.Cover.MaxSignalLen()
+	prevOp := ""                          // Phase 8b: track previous op for pair TS
+	cluster := classifyProgram(job.p)     // Phase 8e: classify once per program
 	for i := 0; i < iters; i++ {
 		p := job.p.Clone()
 		op := p.Mutate(rnd, prog.RecommendedCalls,
@@ -490,7 +492,8 @@ func (job *smashJob) run(fuzzer *Fuzzer) {
 				covGain = currentSignalLen - lastSignalLen
 				lastSignalLen = currentSignalLen
 			}
-			fuzzer.dezzer.RecordResult(op, covGain, SourceSmash)
+			fuzzer.dezzer.RecordResult(op, prevOp, covGain, SourceSmash, cluster)
+			prevOp = op
 		}
 	}
 }
@@ -538,14 +541,33 @@ func (job *focusJob) run(fuzzer *Fuzzer) {
 	opDist := make(map[string]int)
 	opCovGains := make(map[string]int)
 
-	mutOpts := fuzzer.getAIMutateOpts()
+	prevOp := ""                          // Phase 8b: track previous op for pair TS
+	cluster := classifyProgram(job.p)     // Phase 8e: classify once per program
+
+	// Phase 8f: Effective Component — identify essential syscalls for focused mutation.
+	var essential []bool
+	if len(job.p.Calls) >= 5 {
+		essential = fuzzer.getOrComputeAblation(job.exec, job.p, job.title, rnd)
+	}
+
 	for i := 0; i < focusMaxIters; i++ {
-		p := job.p.Clone()
-		op := p.MutateWithOpts(rnd, prog.RecommendedCalls,
-			fuzzer.ChoiceTable(),
-			fuzzer.Config.NoMutateCalls,
-			fuzzer.Config.Corpus.Programs(),
-			mutOpts)
+		mutOpts := fuzzer.getAIMutateOpts(prevOp, cluster) // Phase 8b: pair-aware weights
+
+		var p *prog.Prog
+		var op string
+
+		// Phase 8f: 50% chance to use essential-focused mutation.
+		if essential != nil && rnd.Intn(2) == 0 {
+			p, op = fuzzer.essentialMutate(job.p, essential, rnd, mutOpts)
+		}
+		if p == nil {
+			p = job.p.Clone()
+			op = p.MutateWithOpts(rnd, prog.RecommendedCalls,
+				fuzzer.ChoiceTable(),
+				fuzzer.Config.NoMutateCalls,
+				fuzzer.Config.Corpus.Programs(),
+				mutOpts)
+		}
 		if op != "" {
 			opDist[op]++
 		}
@@ -575,11 +597,17 @@ func (job *focusJob) run(fuzzer *Fuzzer) {
 		// PROBE: Phase 6 — feed result to DEzzer.
 		if op != "" {
 			if fuzzer.dezzer != nil {
-				fuzzer.dezzer.RecordResult(op, covGain, SourceFocus)
+				fuzzer.dezzer.RecordResult(op, prevOp, covGain, SourceFocus, cluster)
 			}
 			if covGain > 0 {
 				opCovGains[op] += covGain
 			}
+			prevOp = op
+		}
+
+		// Phase 8c: Record objective reward based on eBPF signals.
+		if fuzzer.dezzer != nil && result.Info != nil {
+			fuzzer.recordObjectiveReward(result.Info, covGain)
 		}
 
 		if noProgress >= focusNoProgressMax {
