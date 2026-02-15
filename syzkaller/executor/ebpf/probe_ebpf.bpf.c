@@ -86,7 +86,17 @@ int trace_kmalloc(struct trace_event_raw_kmalloc *ctx)
 	if (!free_ts)
 		return 0;
 
-	// Slab reuse detected!
+	// Epoch filter: ignore freed pointers from previous program executions.
+	// execution_start_ns is set by the executor before each program runs.
+	// If the free happened before the current execution started, it's
+	// cross-program contamination — not a real reuse within this program.
+	__u64 exec_start = m->execution_start_ns;
+	if (exec_start > 0 && *free_ts < exec_start) {
+		bpf_map_delete_elem(&freed_objects, &ptr);
+		return 0;
+	}
+
+	// Slab reuse detected (within current execution)!
 	__u64 now = bpf_ktime_get_ns();
 	__u64 delay = now - *free_ts;
 

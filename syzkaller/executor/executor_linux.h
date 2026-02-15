@@ -387,6 +387,7 @@ struct probe_metrics {
 	uint64 min_reuse_delay_ns;
 	uint64 double_free_count;
 	uint64 size_mismatch_count;
+	uint64 execution_start_ns;
 };
 
 static int ebpf_metrics_fd = -1;
@@ -458,8 +459,15 @@ static struct probe_metrics ebpf_read_and_reset()
 		return m;
 	}
 
-	// BPF_MAP_UPDATE_ELEM: zero out for next execution
-	struct probe_metrics zero = {};
+	// BPF_MAP_UPDATE_ELEM: zero out counters and set execution_start_ns epoch.
+	// The epoch timestamp lets the BPF program distinguish freed pointers from
+	// the current execution vs. stale entries from previous executions.
+	// This eliminates cross-program contamination without clearing freed_objects.
+	struct probe_metrics next = {};
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	next.execution_start_ns = (uint64)ts.tv_sec * 1000000000ULL + (uint64)ts.tv_nsec;
+
 	struct {
 		uint64 map_fd;
 		uint64 key;
@@ -468,49 +476,11 @@ static struct probe_metrics ebpf_read_and_reset()
 	} update_attr = {};
 	update_attr.map_fd = (uint64)(uint32)ebpf_metrics_fd;
 	update_attr.key = (uint64)(unsigned long)&key;
-	update_attr.value = (uint64)(unsigned long)&zero;
+	update_attr.value = (uint64)(unsigned long)&next;
 	update_attr.flags = 0; // BPF_ANY
 
 	syscall(__NR_bpf, PROBE_BPF_MAP_UPDATE_ELEM,
 		&update_attr, sizeof(update_attr));
-
-	// Clear ALL freed_objects entries to prevent cross-program reuse contamination.
-	// Without this, freed pointers from program N appear as "reuse" in program N+1,
-	// causing UAF scores to saturate to 100 over time.
-	// Strategy: always get first key (key=NULL), delete it, repeat.
-	// This avoids iteration bugs from deleting during traversal.
-	if (ebpf_freed_fd >= 0) {
-		uint64 next_key = 0;
-		struct {
-			uint64 map_fd;
-			uint64 key;
-			uint64 next_key;
-			uint64 flags;
-		} getnext = {};
-		getnext.map_fd = (uint64)(uint32)ebpf_freed_fd;
-		getnext.next_key = (uint64)(unsigned long)&next_key;
-
-		struct {
-			uint64 map_fd;
-			uint64 key;
-			uint64 value;
-			uint64 flags;
-		} del = {};
-		del.map_fd = (uint64)(uint32)ebpf_freed_fd;
-
-		// Delete all entries (map max_entries=8192).
-		// Always restart from first key after each delete.
-		for (int i = 0; i < 8192; i++) {
-			getnext.key = 0; // NULL = get first remaining key
-			long r = syscall(__NR_bpf, 4 /* BPF_MAP_GET_NEXT_KEY */,
-					 &getnext, sizeof(getnext));
-			if (r < 0)
-				break; // map is empty
-			del.key = (uint64)(unsigned long)&next_key;
-			syscall(__NR_bpf, 3 /* BPF_MAP_DELETE_ELEM */,
-				&del, sizeof(del));
-		}
-	}
 
 	return m;
 }

@@ -1542,14 +1542,9 @@ flatbuffers::span<uint8_t> finish_output(OutputData* output, int proc_id, uint64
 		ebpf_min_ns = output->ebpf_min_ns.load(std::memory_order_relaxed);
 		ebpf_double_free = output->ebpf_double_free.load(std::memory_order_relaxed);
 		ebpf_size_mismatch = output->ebpf_size_mismatch.load(std::memory_order_relaxed);
-		// Sanity check: if reuse count is absurdly high, the freed_objects map
-		// didn't clear properly. Suppress scoring to avoid Focus over-triggering.
-		if (ebpf_reuse > 500) {
-			debug("PROBE: eBPF reuse count suspiciously high (%u), suppressing score\n", ebpf_reuse);
-			ebpf_reuse = 0;
-			ebpf_rapid = 0;
-		}
 		// Compute UAF exploitability score (0-100)
+		// Note: cross-program contamination is prevented by epoch-based filtering
+		// in the BPF program (execution_start_ns), so no saturation guard needed.
 		if (ebpf_rapid > 0)
 			ebpf_uaf_score += 50;
 		if (ebpf_min_ns > 0 && ebpf_min_ns < 10000)

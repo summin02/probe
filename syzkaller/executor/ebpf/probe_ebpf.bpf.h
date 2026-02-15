@@ -98,6 +98,7 @@ struct probe_metrics {
 	__u64 min_reuse_delay_ns; // fastest reuse (lower = more exploitable)
 	__u64 double_free_count;      // double-free detected (ptr freed twice without alloc)
 	__u64 size_mismatch_count;    // cross-cache: bytes_alloc > 2 * bytes_req
+	__u64 execution_start_ns;     // epoch: set by executor before each program, used to filter stale freed_objects
 };
 
 // License string
