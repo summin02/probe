@@ -384,9 +384,80 @@ make probe_ebpf   # Builds BPF object + loader to bin/linux_amd64/
 | 3 | AI Triage (Claude Haiku 4.5) | Medium | Smart group-level crash analysis | Phase 1 (needs dedup groups), Phase 2 (needs Focus Mode) |
 | 4 | Practical Hardening (UAF/OOB) | Medium | Higher vuln discovery rate | None (can parallel with 2-3) | **DONE** |
 | 5 | eBPF Runtime Monitor | High | Real-time exploitability feedback | Phase 2 (needs Focus Mode feedback loop) | **DONE** |
+| 6 | AI Cost Optimization + Data-Driven Scheduling | Medium | -50% API cost, DEzzer auto-optimization, SyzMini minimization | Phase 3 (needs AI integration) | **DONE** |
 
 **Critical path**: Phase 1 → Phase 2 → Phase 3 (sequential dependency)
 **Parallel track**: Phase 4 can start any time independently
+
+## Phase 6: AI Cost Optimization + Data-Driven Scheduling — **DONE**
+
+Phase 6 focuses on AI API cost reduction and data-driven fuzzing optimization. After deep analysis, 2 of the original 6 items were removed (Prompt Caching, Tiered Routing — insufficient benefit) and 2 were significantly redesigned.
+
+### 6a. Batch API Migration — **DONE**
+
+**Goal**: Use Anthropic Message Batches API (`/v1/messages/batches`) for 50% cost reduction on crash analysis. Strategy calls (1/hour) remain synchronous.
+
+**Files modified**: `pkg/aitriage/client.go` (BatchClient interface + Anthropic implementation), `pkg/aitriage/batch.go` (new: state persistence), `pkg/aitriage/aitriage.go` (stepA batch/sync branching)
+
+**Key design**:
+- Batch mode activates when: Anthropic provider + 2+ pending crashes
+- 30-second polling, 30-minute timeout, then cancel + sync fallback
+- Disk persistence (`ai-batch-state.json`) for crash recovery
+- Failed batch requests retry synchronously (max 3)
+- OpenAI provider always uses sync mode (no batch support)
+
+### 6d'. Per-Source Coverage Metrics — **DONE**
+
+**Goal**: Track coverage gains per source (focus/smash/fuzz) for scheduling optimization data.
+
+**Files modified**: `pkg/fuzzer/stats.go` (3 new stat.Val), `pkg/fuzzer/fuzzer.go` (processResult source attribution)
+
+**Metrics**: `statFocusCovGain`, `statSmashCovGain`, `statFuzzCovGain` — visible on dashboard as "source cov" stacked graph.
+
+### 6e. SyzMini Influence-Based Minimization — **DONE**
+
+**Goal**: Reduce minimization cost by ~60% using influence-based call removal ordering (SyzMini, ATC 2025).
+
+**Files modified**: `prog/minimization.go` (removeCalls Phase 3 with influence probing)
+
+**How it works**: For `MinimizeCorpus` mode, before removing calls sequentially:
+1. **Influence probing**: Try removing each call once to check if it breaks the signal (max 30 calls)
+2. **Sort**: Removable calls first (influence=0), then non-removable
+3. **Remove**: Safe removals first triggers cascade effects, reducing total pred calls
+
+Non-corpus modes (PatchTest, CrashSnapshot) use the original end→begin order.
+
+### 6f. DEzzer — Operator Tracking + DE Optimization — **DONE**
+
+**Goal**: Track per-operator mutation success rates and auto-optimize weights via Differential Evolution.
+
+**Files modified**: `prog/mutation.go` (string return value), `pkg/fuzzer/dezzer.go` (new: DE engine), `pkg/fuzzer/fuzzer.go` (DEzzer integration), `pkg/fuzzer/job.go` (operator capture), `pkg/fuzzer/stats.go` (operator stats)
+
+**3-Layer Architecture**:
+```
+Layer 1: DefaultMutateOpts (constant)     — Squash:50, Splice:200, ...
+Layer 2: AI Base Weights (hourly)         — multiplier set by SetAIMutationHints
+Layer 3: DE Delta (real-time, ±20%)       — fine-tuning via DEzzer
+Final weights = Default × AI Base × DE Delta
+```
+
+**Lazy DE**: Evolves 1 generation every 100 mutation results. Population=10, sliding window=100 per operator. AI reset → population reset.
+
+**mutation.go change**: `Mutate()` and `MutateWithOpts()` now return `string` (operator name). Go allows ignoring return values, so 12+ test callsites and tool callsites need no modification.
+
+### 6f'. Focus Coverage Feedback Loop — **DONE**
+
+**Goal**: Feed focus job results + DEzzer state back into AI strategy prompts.
+
+**Files modified**: `pkg/fuzzer/fuzzer.go` (FocusJobResult, buffer), `pkg/fuzzer/job.go` (result recording), `pkg/aitriage/aitriage.go` (FuzzingSnapshot fields), `pkg/aitriage/prompt_strategy.go` (prompt formatting), `syz-manager/ai_triage.go` (snapshot wiring)
+
+**Prompt formatting**: ≤5 results → full detail; 6-20 → 3 recent detail + aggregate summary (~300 tokens cap).
+
+### Build
+
+```bash
+cd syzkaller && make host  # Builds all host tools including syz-manager
+```
 
 ## Phase 6+: Advanced Improvements Roadmap
 

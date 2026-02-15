@@ -107,6 +107,31 @@ func (mgr *Manager) aiGetSnapshot() *aitriage.FuzzingSnapshot {
 		snap.CrashSummaries = append(snap.CrashSummaries, summary)
 	}
 
+	// PROBE: Phase 6 — Include DEzzer state and Focus results.
+	if ds := f.DEzzerSnapshot(); ds != nil {
+		snap.DEzzerStatus = &aitriage.DEzzerStatusData{
+			Generation:     ds.Generation,
+			BestFitness:    ds.BestFitness,
+			OpSuccessRates: ds.OpSuccessRates,
+			OpAvgCovGain:   ds.OpAvgCovGain,
+			AIBaseWeights:  ds.AIBaseWeights,
+			DEDelta:        ds.DEDelta,
+			FinalWeights:   ds.FinalWeights,
+		}
+	}
+	for _, fr := range f.FocusResults() {
+		snap.FocusResults = append(snap.FocusResults, aitriage.FocusResultData{
+			Title:           fr.Title,
+			Tier:            fr.Tier,
+			TotalIters:      fr.TotalIters,
+			NewCoverage:     fr.NewCoverage,
+			CoveragePerExec: fr.CoveragePerExec,
+			EarlyExit:       fr.EarlyExit,
+			OpDistribution:  fr.OpDistribution,
+			OpCovGains:      fr.OpCovGains,
+		})
+	}
+
 	return snap
 }
 

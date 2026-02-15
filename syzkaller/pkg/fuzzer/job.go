@@ -58,12 +58,30 @@ func mutateProgRequest(fuzzer *Fuzzer, rnd *rand.Rand) *queue.Request {
 		return nil
 	}
 	newP := p.Clone()
-	newP.Mutate(rnd,
+	op := newP.Mutate(rnd,
 		prog.RecommendedCalls,
 		fuzzer.ChoiceTable(),
 		fuzzer.Config.NoMutateCalls,
 		fuzzer.Config.Corpus.Programs(),
 	)
+	// PROBE: Phase 6 — track operator usage.
+	if op != "" {
+		switch op {
+		case "squash":
+			fuzzer.statMutOpSquash.Add(1)
+		case "splice":
+			fuzzer.statMutOpSplice.Add(1)
+		case "insert":
+			fuzzer.statMutOpInsert.Add(1)
+		case "mutate_arg":
+			fuzzer.statMutOpMutateArg.Add(1)
+		case "remove":
+			fuzzer.statMutOpRemove.Add(1)
+		}
+		if fuzzer.dezzer != nil {
+			fuzzer.dezzer.RecordResult(op, 0) // covGain updated in processResult
+		}
+	}
 	return &queue.Request{
 		Prog:     newP,
 		ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
@@ -452,10 +470,14 @@ func (job *smashJob) run(fuzzer *Fuzzer) {
 	rnd := fuzzer.rand()
 	for i := 0; i < iters; i++ {
 		p := job.p.Clone()
-		p.Mutate(rnd, prog.RecommendedCalls,
+		op := p.Mutate(rnd, prog.RecommendedCalls,
 			fuzzer.ChoiceTable(),
 			fuzzer.Config.NoMutateCalls,
 			fuzzer.Config.Corpus.Programs())
+		// PROBE: Phase 6 — track operator in DEzzer.
+		if op != "" && fuzzer.dezzer != nil {
+			fuzzer.dezzer.RecordResult(op, 0)
+		}
 		result := fuzzer.execute(job.exec, &queue.Request{
 			Prog:     p,
 			ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
@@ -507,14 +529,22 @@ func (job *focusJob) run(fuzzer *Fuzzer) {
 	fuzzer.Logf(0, "PROBE: focus mode started for '%v' (tier %d)", job.title, job.tier)
 	job.info.Logf("focus target:\n%s", job.p.Serialize())
 
+	// PROBE: Phase 6 — track operator distribution and coverage gains.
+	opDist := make(map[string]int)
+	opCovGains := make(map[string]int)
+
 	mutOpts := fuzzer.getAIMutateOpts()
 	for i := 0; i < focusMaxIters; i++ {
 		p := job.p.Clone()
-		p.MutateWithOpts(rnd, prog.RecommendedCalls,
+		op := p.MutateWithOpts(rnd, prog.RecommendedCalls,
 			fuzzer.ChoiceTable(),
 			fuzzer.Config.NoMutateCalls,
 			fuzzer.Config.Corpus.Programs(),
 			mutOpts)
+		if op != "" {
+			opDist[op]++
+		}
+
 		result := fuzzer.execute(job.exec, &queue.Request{
 			Prog:     p,
 			ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
@@ -527,7 +557,9 @@ func (job *focusJob) run(fuzzer *Fuzzer) {
 		job.info.Execs.Add(1)
 
 		currentSignalLen := fuzzer.Cover.MaxSignalLen()
+		covGain := 0
 		if currentSignalLen > lastSignalLen {
+			covGain = currentSignalLen - lastSignalLen
 			newCoverage++
 			noProgress = 0
 			lastSignalLen = currentSignalLen
@@ -535,18 +567,46 @@ func (job *focusJob) run(fuzzer *Fuzzer) {
 			noProgress++
 		}
 
+		// PROBE: Phase 6 — feed result to DEzzer.
+		if op != "" {
+			if fuzzer.dezzer != nil {
+				fuzzer.dezzer.RecordResult(op, covGain)
+			}
+			if covGain > 0 {
+				opCovGains[op] += covGain
+			}
+		}
+
 		if noProgress >= focusNoProgressMax {
 			break
 		}
 	}
 
+	earlyExit := noProgress >= focusNoProgressMax
 	exitReason := "completed"
-	if noProgress >= focusNoProgressMax {
+	if earlyExit {
 		exitReason = fmt.Sprintf("no-progress(%d)", focusNoProgressMax)
 	}
 	duration := time.Since(start).Round(time.Second)
 	fuzzer.Logf(0, "PROBE: focus mode ended for '%v' — iters: %d/%d, new_coverage: %d, exit_reason: %s, duration: %v",
 		job.title, totalIters, focusMaxIters, newCoverage, exitReason, duration)
+
+	// PROBE: Phase 6 — record focus result for AI feedback loop.
+	covPerExec := 0.0
+	if totalIters > 0 {
+		covPerExec = float64(newCoverage) / float64(totalIters)
+	}
+	fuzzer.RecordFocusResult(FocusJobResult{
+		Title:           job.title,
+		Tier:            job.tier,
+		TotalIters:      totalIters,
+		NewCoverage:     newCoverage,
+		CoveragePerExec: covPerExec,
+		EarlyExit:       earlyExit,
+		OpDistribution:  opDist,
+		OpCovGains:      opCovGains,
+		Timestamp:       time.Now(),
+	})
 }
 
 func (job *focusJob) getInfo() *JobInfo {

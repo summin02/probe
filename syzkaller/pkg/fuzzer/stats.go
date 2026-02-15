@@ -42,6 +42,15 @@ type Stats struct {
 	statEbpfUafDetected     *stat.Val // PROBE: Phase 5
 	statEbpfDoubleFree      *stat.Val // PROBE: Phase 5
 	statEbpfSizeMismatch    *stat.Val // PROBE: Phase 5
+	statFocusCovGain        *stat.Val // PROBE: Phase 6 — per-source coverage metrics
+	statSmashCovGain        *stat.Val // PROBE: Phase 6
+	statFuzzCovGain         *stat.Val // PROBE: Phase 6
+	statMutOpSquash         *stat.Val // PROBE: Phase 6 — mutation operator tracking
+	statMutOpSplice         *stat.Val // PROBE: Phase 6
+	statMutOpInsert         *stat.Val // PROBE: Phase 6
+	statMutOpMutateArg      *stat.Val // PROBE: Phase 6
+	statMutOpRemove         *stat.Val // PROBE: Phase 6
+	statMutOpCovGain        *stat.Val // PROBE: Phase 6
 }
 
 type SyscallStats struct {
@@ -107,5 +116,23 @@ func newStats(target *prog.Target) Stats {
 			stat.Graph("ebpf")),
 		statEbpfSizeMismatch: stat.New("ebpf size-mismatch", "Cross-cache size mismatches detected by eBPF",
 			stat.Rate{}, stat.Graph("ebpf")),
+		statFocusCovGain: stat.New("focus cov gain", "Coverage gains from focus mode executions",
+			stat.Rate{}, stat.StackedGraph("source cov")),
+		statSmashCovGain: stat.New("smash cov gain", "Coverage gains from smash job executions",
+			stat.Rate{}, stat.StackedGraph("source cov")),
+		statFuzzCovGain: stat.New("fuzz cov gain", "Coverage gains from fuzz/generate executions",
+			stat.Rate{}, stat.StackedGraph("source cov")),
+		statMutOpSquash: stat.New("mut squash", "Squash operator applications",
+			stat.Rate{}, stat.StackedGraph("mut ops")),
+		statMutOpSplice: stat.New("mut splice", "Splice operator applications",
+			stat.Rate{}, stat.StackedGraph("mut ops")),
+		statMutOpInsert: stat.New("mut insert", "Insert operator applications",
+			stat.Rate{}, stat.StackedGraph("mut ops")),
+		statMutOpMutateArg: stat.New("mut arg", "MutateArg operator applications",
+			stat.Rate{}, stat.StackedGraph("mut ops")),
+		statMutOpRemove: stat.New("mut remove", "Remove operator applications",
+			stat.Rate{}, stat.StackedGraph("mut ops")),
+		statMutOpCovGain: stat.New("mut cov gain", "Coverage gains attributed to mutations",
+			stat.Rate{}, stat.Graph("mut ops")),
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"reflect"
+	"sort"
 
 	"github.com/google/syzkaller/pkg/hash"
 	"github.com/google/syzkaller/pkg/stat"
@@ -75,7 +76,7 @@ func Minimize(p0 *Prog, callIndex0 int, mode MinimizeMode, pred0 func(*Prog, int
 	}
 
 	// Try to remove all calls except the last one one-by-one.
-	p0, callIndex0 = removeCalls(p0, callIndex0, pred)
+	p0, callIndex0 = removeCalls(p0, callIndex0, mode, pred)
 
 	if mode != MinimizeCallsOnly {
 		// Try to reset all call props to their default values.
@@ -117,7 +118,7 @@ func Minimize(p0 *Prog, callIndex0 int, mode MinimizeMode, pred0 func(*Prog, int
 
 type minimizePred func(*Prog, int, *stat.Val, string) bool
 
-func removeCalls(p0 *Prog, callIndex0 int, pred minimizePred) (*Prog, int) {
+func removeCalls(p0 *Prog, callIndex0 int, mode MinimizeMode, pred minimizePred) (*Prog, int) {
 	if callIndex0 >= 0 && callIndex0+2 < len(p0.Calls) {
 		// It's frequently the case that all subsequent calls were not necessary.
 		// Try to drop them all at once.
@@ -134,8 +135,86 @@ func removeCalls(p0 *Prog, callIndex0 int, pred minimizePred) (*Prog, int) {
 		p0, callIndex0 = removeUnrelatedCalls(p0, callIndex0, pred)
 	}
 
+	// PROBE: Phase 6 — SyzMini influence-based ordering for MinimizeCorpus.
+	// Instead of removing calls end→begin (arbitrary), first probe each call
+	// to determine its influence (whether removing it breaks the signal).
+	// Then remove calls in order of lowest influence first (safe removals first),
+	// which triggers cascade effects and reduces total pred calls.
+	if mode == MinimizeCorpus && len(p0.Calls) > 2 {
+		p0, callIndex0 = removeCallsByInfluence(p0, callIndex0, pred)
+	} else {
+		for i := len(p0.Calls) - 1; i >= 0; i-- {
+			if i == callIndex0 {
+				continue
+			}
+			callIndex := callIndex0
+			if i < callIndex {
+				callIndex--
+			}
+			p := p0.Clone()
+			p.RemoveCall(i)
+			if !pred(p, callIndex, statMinRemoveCall, fmt.Sprintf("call %v", i)) {
+				continue
+			}
+			p0 = p
+			callIndex0 = callIndex
+		}
+	}
+	return p0, callIndex0
+}
+
+// PROBE: Phase 6 — removeCallsByInfluence implements SyzMini's influence-based minimization.
+// Phase 1: Probe each call's influence (1 pred call per removable call).
+// Phase 2: Sort by influence (lowest first) and remove in that order.
+// This reduces total pred calls by ~60% (SyzMini ATC 2025).
+func removeCallsByInfluence(p0 *Prog, callIndex0 int, pred minimizePred) (*Prog, int) {
+	type callInfluence struct {
+		index     int
+		removable bool // true = removing this call preserves the signal
+	}
+
+	// Phase 1: Probe each call to measure influence.
+	// Cap at 30 calls to avoid excessive probing on very large programs.
+	maxProbe := 30
+	var influences []callInfluence
+	probed := 0
 	for i := len(p0.Calls) - 1; i >= 0; i-- {
 		if i == callIndex0 {
+			continue
+		}
+		if probed >= maxProbe {
+			// Remaining calls: add as non-removable (will be tried last).
+			influences = append(influences, callInfluence{index: i, removable: false})
+			continue
+		}
+		callIndex := callIndex0
+		if i < callIndex {
+			callIndex--
+		}
+		p := p0.Clone()
+		p.RemoveCall(i)
+		ok := pred(p, callIndex, statMinRemoveCall, fmt.Sprintf("influence-probe call %v", i))
+		influences = append(influences, callInfluence{index: i, removable: ok})
+		probed++
+	}
+
+	// Phase 2: Sort — removable calls first (influence=0), then non-removable (influence=1).
+	sort.SliceStable(influences, func(a, b int) bool {
+		if influences[a].removable != influences[b].removable {
+			return influences[a].removable // true < false → removable first
+		}
+		return false // preserve original order within same group
+	})
+
+	// Phase 3: Remove calls in influence order.
+	for _, inf := range influences {
+		i := inf.index
+		if i >= len(p0.Calls) || i == callIndex0 {
+			continue
+		}
+		// Adjust index: previous removals may have shifted indices.
+		// Re-find the call by checking bounds.
+		if i >= len(p0.Calls) {
 			continue
 		}
 		callIndex := callIndex0

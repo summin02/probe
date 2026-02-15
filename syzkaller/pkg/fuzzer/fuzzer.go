@@ -52,6 +52,11 @@ type Fuzzer struct {
 	aiMutHintsMu sync.Mutex
 	aiMutHints   *prog.MutateOpts // nil = use default
 
+	// PROBE: Phase 6 — DEzzer optimizer and focus feedback.
+	dezzer       *DEzzer
+	focusResultsMu sync.Mutex
+	focusResults   []FocusJobResult
+
 	execQueues
 }
 
@@ -78,6 +83,7 @@ func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 
 		focusTitles: map[string]bool{},
 	}
+	f.dezzer = NewDEzzer(f.Logf)
 	f.execQueues = newExecQueues(f)
 	f.updateChoiceTable(nil)
 	go f.choiceTableUpdater()
@@ -174,6 +180,16 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 		fuzzer.triageProgCall(req.Prog, res.Info.Extra, -1, &triage)
 
 		if len(triage) != 0 {
+			// PROBE: Phase 6 — per-source coverage gain tracking.
+			switch req.Stat {
+			case fuzzer.statExecFocus:
+				fuzzer.statFocusCovGain.Add(1)
+			case fuzzer.statExecSmash:
+				fuzzer.statSmashCovGain.Add(1)
+			case fuzzer.statExecFuzz, fuzzer.statExecGenerate:
+				fuzzer.statFuzzCovGain.Add(1)
+			}
+
 			queue, stat := fuzzer.triageQueue, fuzzer.statJobsTriage
 			if flags&progCandidate > 0 {
 				queue, stat = fuzzer.triageCandidateQueue, fuzzer.statJobsTriageCandidate
@@ -706,12 +722,21 @@ func (fuzzer *Fuzzer) SetAIMutationHints(hints interface{}) {
 	fuzzer.aiMutHints = &opts
 	fuzzer.aiMutHintsMu.Unlock()
 
+	// PROBE: Phase 6 — Push AI base weights to DEzzer (resets DE population).
+	if fuzzer.dezzer != nil {
+		fuzzer.dezzer.SetAIBaseWeights(opts)
+	}
+
 	fuzzer.Logf(0, "PROBE: AI mutation hints applied — splice=%d, insert=%d, mutate_arg=%d, remove=%d (%s)",
 		opts.SpliceWeight, opts.InsertWeight, opts.MutateArgWeight, opts.RemoveCallWeight, mh.Reason)
 }
 
-// PROBE: getAIMutateOpts returns AI-adjusted mutation opts if set, otherwise default opts.
+// PROBE: getAIMutateOpts returns the layered mutation weights.
+// Priority: DEzzer (Default × AI × DE) > AI only > Default.
 func (fuzzer *Fuzzer) getAIMutateOpts() prog.MutateOpts {
+	if fuzzer.dezzer != nil {
+		return fuzzer.dezzer.GetCurrentWeights()
+	}
 	fuzzer.aiMutHintsMu.Lock()
 	hints := fuzzer.aiMutHints
 	fuzzer.aiMutHintsMu.Unlock()
@@ -719,6 +744,49 @@ func (fuzzer *Fuzzer) getAIMutateOpts() prog.MutateOpts {
 		return *hints
 	}
 	return prog.DefaultMutateOpts
+}
+
+// PROBE: Phase 6 — FocusJobResult captures focus job outcomes for AI feedback.
+type FocusJobResult struct {
+	Title           string         `json:"title"`
+	Tier            int            `json:"tier"`
+	TotalIters      int            `json:"total_iters"`
+	NewCoverage     int            `json:"new_coverage"`
+	CoveragePerExec float64        `json:"coverage_per_exec"`
+	EarlyExit       bool           `json:"early_exit"`
+	OpDistribution  map[string]int `json:"op_distribution"`
+	OpCovGains      map[string]int `json:"op_cov_gains"`
+	Timestamp       time.Time      `json:"timestamp"`
+}
+
+const maxFocusResults = 20
+
+// RecordFocusResult stores a focus job result for AI feedback.
+func (fuzzer *Fuzzer) RecordFocusResult(result FocusJobResult) {
+	fuzzer.focusResultsMu.Lock()
+	defer fuzzer.focusResultsMu.Unlock()
+	fuzzer.focusResults = append(fuzzer.focusResults, result)
+	if len(fuzzer.focusResults) > maxFocusResults {
+		fuzzer.focusResults = fuzzer.focusResults[len(fuzzer.focusResults)-maxFocusResults:]
+	}
+}
+
+// FocusResults returns a copy of recent focus job results.
+func (fuzzer *Fuzzer) FocusResults() []FocusJobResult {
+	fuzzer.focusResultsMu.Lock()
+	defer fuzzer.focusResultsMu.Unlock()
+	out := make([]FocusJobResult, len(fuzzer.focusResults))
+	copy(out, fuzzer.focusResults)
+	return out
+}
+
+// DEzzerSnapshot returns the current DEzzer state, or nil if disabled.
+func (fuzzer *Fuzzer) DEzzerSnapshot() *DEzzerSnapshot {
+	if fuzzer.dezzer == nil {
+		return nil
+	}
+	snap := fuzzer.dezzer.Snapshot()
+	return &snap
 }
 
 func setFlags(execFlags flatrpc.ExecFlag) flatrpc.ExecOpts {

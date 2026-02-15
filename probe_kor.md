@@ -383,9 +383,62 @@ make probe_ebpf   # BPF 오브젝트 + 로더를 bin/linux_amd64/에 빌드
 | 3 | AI 트리아지 (Claude Haiku 4.5) | 중간 | 스마트 그룹 단위 크래시 분석 | Phase 1 (중복 제거 그룹 필요), Phase 2 (포커스 모드 필요) |
 | 4 | Practical Hardening (UAF/OOB) | 중간 | 취약점 발견율 향상 | 없음 (2-3과 병렬 가능) | **완료** |
 | 5 | eBPF 런타임 모니터 | 높음 | 실시간 익스플로잇 가능성 피드백 | Phase 2 (포커스 모드 피드백 루프 필요) | **완료** |
+| 6 | AI 비용 최적화 + 데이터 기반 스케줄링 | 중간 | -50% API 비용, DEzzer 자동 최적화, SyzMini 최소화 | Phase 3 (AI 통합 필요) | **완료** |
 
 **크리티컬 패스**: Phase 1 → Phase 2 → Phase 3 (순차 의존성)
 **병렬 트랙**: Phase 4는 독립적으로 언제든 시작 가능
+
+## Phase 6: AI 비용 최적화 + 데이터 기반 스케줄링 — **완료**
+
+심층 분석 후 원래 6개 항목 중 2개 제거 (Prompt Caching, Tiered Routing — 효과 미미), 2개 대폭 변경.
+
+### 6a. Batch API 마이그레이션 — **완료**
+
+**목표**: Anthropic Batch API로 crash 분석 비용 50% 절감. Strategy 호출(1회/시간)은 동기 유지.
+
+**수정 파일**: `pkg/aitriage/client.go` (BatchClient 인터페이스 + Anthropic 구현), `pkg/aitriage/batch.go` (신규: 상태 영속성), `pkg/aitriage/aitriage.go` (stepA 배치/동기 분기)
+
+**핵심 설계**:
+- 배치 조건: Anthropic provider + 2개 이상 pending
+- 30초 폴링, 30분 타임아웃 → 취소 후 동기 폴백
+- 디스크 영속성(`ai-batch-state.json`)으로 매니저 크래시 복구
+- 실패 요청은 동기 재시도 (최대 3건)
+- OpenAI는 항상 동기 모드
+
+### 6d'. Per-Source 커버리지 메트릭 — **완료**
+
+**목표**: focus/smash/fuzz 소스별 커버리지 게인 추적. 대시보드 표시.
+
+**수정 파일**: `pkg/fuzzer/stats.go` (3개 stat.Val 추가), `pkg/fuzzer/fuzzer.go` (processResult 소스 귀속)
+
+### 6e. SyzMini 영향 기반 최소화 — **완료**
+
+**목표**: 영향도 기반 호출 제거 순서로 최소화 비용 ~60% 감소 (SyzMini, ATC 2025).
+
+**수정 파일**: `prog/minimization.go` (removeCalls Phase 3에 influence probing 추가)
+
+**원리**: MinimizeCorpus 모드에서 각 call을 1회 시험 제거 → 안전한 것부터 제거 → 연쇄 제거 효과.
+
+### 6f. DEzzer — Operator별 추적 + DE 최적화 — **완료**
+
+**목표**: mutation operator별 성과 실시간 추적 + DE 알고리즘 자동 가중치 최적화.
+
+**수정 파일**: `prog/mutation.go` (반환값 string 추가), `pkg/fuzzer/dezzer.go` (신규: DE 엔진), `pkg/fuzzer/fuzzer.go` (DEzzer 통합), `pkg/fuzzer/job.go` (operator 캡처), `pkg/fuzzer/stats.go` (operator 통계)
+
+**3계층 아키텍처**: Default × AI Base × DE Delta (±20%).
+Lazy DE: 100회마다 1세대 진화, population=10, sliding window=100.
+
+### 6f'. Focus 커버리지 피드백 루프 — **완료**
+
+**목표**: Focus job 결과 + DEzzer 상태를 AI strategy 프롬프트에 피드백.
+
+**수정 파일**: `pkg/fuzzer/fuzzer.go` (FocusJobResult), `pkg/fuzzer/job.go` (결과 기록), `pkg/aitriage/aitriage.go` (FuzzingSnapshot 확장), `pkg/aitriage/prompt_strategy.go` (프롬프트 포맷), `syz-manager/ai_triage.go` (스냅샷 연결)
+
+### 빌드
+
+```bash
+cd syzkaller && make host  # 모든 호스트 도구 빌드 (syz-manager 포함)
+```
 
 ## Phase 6+: 고급 개선 로드맵
 

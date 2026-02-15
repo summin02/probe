@@ -114,6 +114,33 @@ type FuzzingSnapshot struct {
 	CrashSummaries   []CrashSummary `json:"crash_summaries,omitempty"`
 	NewCrashesCount  int            `json:"new_crashes_count"`
 	SyscallCoverage  map[string]int `json:"syscall_coverage,omitempty"`
+
+	// PROBE: Phase 6 — DEzzer and Focus feedback data.
+	DEzzerStatus   *DEzzerStatusData   `json:"dezzer_status,omitempty"`
+	FocusResults   []FocusResultData   `json:"focus_results,omitempty"`
+}
+
+// DEzzerStatusData is a serializable snapshot of DEzzer state for AI prompts.
+type DEzzerStatusData struct {
+	Generation     int                `json:"generation"`
+	BestFitness    float64            `json:"best_fitness"`
+	OpSuccessRates map[string]float64 `json:"op_success_rates"`
+	OpAvgCovGain   map[string]float64 `json:"op_avg_cov_gain"`
+	AIBaseWeights  map[string]float64 `json:"ai_base_weights"`
+	DEDelta        map[string]float64 `json:"de_delta"`
+	FinalWeights   map[string]int     `json:"final_weights"`
+}
+
+// FocusResultData is a serializable focus job result for AI prompts.
+type FocusResultData struct {
+	Title           string         `json:"title"`
+	Tier            int            `json:"tier"`
+	TotalIters      int            `json:"total_iters"`
+	NewCoverage     int            `json:"new_coverage"`
+	CoveragePerExec float64        `json:"coverage_per_exec"`
+	EarlyExit       bool           `json:"early_exit"`
+	OpDistribution  map[string]int `json:"op_distribution,omitempty"`
+	OpCovGains      map[string]int `json:"op_cov_gains,omitempty"`
 }
 
 type CrashSummary struct {
@@ -299,15 +326,16 @@ type LogEntry struct {
 
 // Triager is the main AI triage orchestrator.
 type Triager struct {
-	cfg       mgrconfig.AITriageConfig
-	client    LLMClient
-	workdir   string
-	cost      *CostTracker
-	mu        sync.Mutex
-	running   bool
-	lastRun   time.Time
-	nextBatch time.Time // when the next automatic batch will run
-	strategy  *StrategyResult
+	cfg         mgrconfig.AITriageConfig
+	client      LLMClient
+	batchClient BatchClient // nil if provider doesn't support batches
+	workdir     string
+	cost        *CostTracker
+	mu          sync.Mutex
+	running     bool
+	lastRun     time.Time
+	nextBatch   time.Time // when the next automatic batch will run
+	strategy    *StrategyResult
 
 	// Console log buffer for the /ai dashboard.
 	logMu  sync.Mutex
@@ -342,9 +370,10 @@ func NewTriager(cfg mgrconfig.AITriageConfig, workdir string) (*Triager, error) 
 		return nil, err
 	}
 	t := &Triager{
-		cfg:     cfg,
-		client:  client,
-		workdir: workdir,
+		cfg:         cfg,
+		client:      client,
+		batchClient: NewBatchClient(cfg),
+		workdir:     workdir,
 	}
 	// Load existing cost tracker from disk.
 	t.cost = loadCostTracker(workdir)
@@ -611,6 +640,16 @@ func (t *Triager) stepA(ctx context.Context) {
 	}
 	t.logf("[Step A] %d crashes to analyze (tier <= %d)", len(pending), maxTier)
 
+	// PROBE: Phase 6 — Batch mode: use Anthropic Batch API if available and 2+ pending.
+	if t.batchClient != nil && len(pending) >= 2 {
+		t.stepABatch(ctx, pending)
+	} else {
+		t.stepASync(ctx, pending)
+	}
+}
+
+// stepASync is the original synchronous crash analysis (one-by-one).
+func (t *Triager) stepASync(ctx context.Context, pending []CrashForAnalysis) {
 	analyzed := 0
 	for i, c := range pending {
 		select {
@@ -656,7 +695,205 @@ func (t *Triager) stepA(ctx context.Context) {
 
 		time.Sleep(3 * time.Second)
 	}
-	t.logf("[Step A] Complete: %d/%d crashes analyzed", analyzed, len(pending))
+	t.logf("[Step A] Complete: %d/%d crashes analyzed (sync)", analyzed, len(pending))
+}
+
+// stepABatch uses the Anthropic Batch API for 50% cost reduction.
+func (t *Triager) stepABatch(ctx context.Context, pending []CrashForAnalysis) {
+	t.logf("[Step A] Using Batch API for %d crashes (50%% cost reduction)", len(pending))
+
+	// Check for in-flight batch from previous run (crash recovery).
+	existingState := loadBatchState(t.workdir)
+	if existingState != nil && existingState.Status == "submitted" {
+		t.logf("[Step A] Recovering in-flight batch %s", existingState.BatchID)
+		t.stepABatchPoll(ctx, existingState, pending)
+		return
+	}
+
+	// Build batch requests.
+	crashMap := make(map[string]CrashForAnalysis)
+	var batchReqs []BatchRequest
+	var entries []BatchEntry
+	for _, c := range pending {
+		systemPrompt, userPrompt := buildCrashPrompt(c)
+		batchReqs = append(batchReqs, BatchRequest{
+			CustomID:     c.ID,
+			SystemPrompt: systemPrompt,
+			UserPrompt:   userPrompt,
+		})
+		entries = append(entries, BatchEntry{CrashID: c.ID, Title: c.Title})
+		crashMap[c.ID] = c
+	}
+
+	// Submit batch.
+	batchID, err := t.batchClient.CreateBatch(ctx, batchReqs)
+	if err != nil {
+		t.logf("[Step A] Batch submit failed: %v — falling back to sync", err)
+		t.stepASync(ctx, pending)
+		return
+	}
+
+	t.logf("[Step A] Batch submitted: %s (%d requests)", batchID, len(batchReqs))
+
+	// Save state for crash recovery.
+	state := &BatchState{
+		BatchID:    batchID,
+		Status:     "submitted",
+		SubmitTime: time.Now(),
+		Requests:   entries,
+	}
+	saveBatchState(t.workdir, state)
+
+	t.stepABatchPoll(ctx, state, pending)
+}
+
+// stepABatchPoll polls a submitted batch until completion, then processes results.
+func (t *Triager) stepABatchPoll(ctx context.Context, state *BatchState, pending []CrashForAnalysis) {
+	crashMap := make(map[string]CrashForAnalysis)
+	for _, c := range pending {
+		crashMap[c.ID] = c
+	}
+
+	const (
+		pollInterval = 30 * time.Second
+		maxWait      = 30 * time.Minute
+	)
+	deadline := state.SubmitTime.Add(maxWait)
+
+	// Poll loop.
+	for {
+		select {
+		case <-ctx.Done():
+			t.logf("[Step A] Batch polling cancelled")
+			return
+		case <-time.After(pollInterval):
+		}
+
+		if time.Now().After(deadline) {
+			t.logf("[Step A] Batch %s timed out after %v — cancelling and falling back to sync", state.BatchID, maxWait)
+			t.batchClient.CancelBatch(ctx, state.BatchID)
+			clearBatchState(t.workdir)
+			// Fall back: re-analyze un-processed crashes synchronously.
+			var unprocessed []CrashForAnalysis
+			for _, e := range state.Requests {
+				if loadTriageResult(t.workdir, e.CrashID) == nil {
+					if c, ok := crashMap[e.CrashID]; ok {
+						unprocessed = append(unprocessed, c)
+					}
+				}
+			}
+			if len(unprocessed) > 0 {
+				t.logf("[Step A] Sync fallback for %d unprocessed crashes", len(unprocessed))
+				t.stepASync(ctx, unprocessed)
+			}
+			return
+		}
+
+		status, err := t.batchClient.CheckBatch(ctx, state.BatchID)
+		if err != nil {
+			t.logf("[Step A] Batch check error: %v", err)
+			continue
+		}
+
+		t.logf("[Step A] Batch %s: status=%s, succeeded=%d, processing=%d, errored=%d",
+			state.BatchID, status.Status, status.RequestCounts.Succeeded,
+			status.RequestCounts.Processing, status.RequestCounts.Errored)
+
+		if status.Status == "ended" {
+			t.stepABatchProcess(ctx, state, crashMap)
+			return
+		}
+	}
+}
+
+// stepABatchProcess retrieves and processes batch results.
+func (t *Triager) stepABatchProcess(ctx context.Context, state *BatchState, crashMap map[string]CrashForAnalysis) {
+	results, err := t.batchClient.GetBatchResults(ctx, state.BatchID)
+	if err != nil {
+		t.logf("[Step A] Batch results fetch failed: %v — falling back to sync", err)
+		clearBatchState(t.workdir)
+		var pending []CrashForAnalysis
+		for _, c := range crashMap {
+			pending = append(pending, c)
+		}
+		t.stepASync(ctx, pending)
+		return
+	}
+
+	succeeded, failed := 0, 0
+	for _, br := range results {
+		c, ok := crashMap[br.CustomID]
+		if !ok {
+			continue
+		}
+
+		call := APICall{
+			Time: time.Now(),
+			Type: "crash",
+		}
+
+		if !br.Success {
+			t.logf("[Step A] Batch result FAILED for %s: %s", c.Title, br.Error)
+			call.Success = false
+			call.Error = br.Error
+			t.cost.Record(call, t.cfg.Model)
+			failed++
+			continue
+		}
+
+		result, err := parseCrashResponse(br.Content)
+		if err != nil {
+			t.logf("[Step A] Batch parse failed for %s: %v", c.Title, err)
+			call.Success = false
+			call.Error = err.Error()
+			t.cost.Record(call, t.cfg.Model)
+			failed++
+			continue
+		}
+
+		result.Model = t.cfg.Model
+		result.Provider = detectProvider(t.cfg)
+		result.Timestamp = time.Now()
+		result.NumVariants = c.NumVariants
+		result.InputTokens = br.InputTokens
+		result.OutputTokens = br.OutputTokens
+
+		call.InputTokens = br.InputTokens
+		call.OutputTokens = br.OutputTokens
+		call.Success = true
+		call.ResultSummary = fmt.Sprintf("score=%d (batch)", result.Score)
+		t.cost.Record(call, t.cfg.Model)
+
+		saveTriageResult(t.workdir, c.ID, result)
+		if t.OnTriageResult != nil {
+			t.OnTriageResult(c.ID, result)
+		}
+
+		succeeded++
+		t.logf("[Step A] Batch done: %s → score=%d, class=%s, vuln=%s",
+			c.Title, result.Score, result.ExploitClass, result.Reasoning.VulnType)
+	}
+
+	saveCostTracker(t.workdir, t.cost)
+	clearBatchState(t.workdir)
+
+	// Sync fallback for failed requests (max 3).
+	if failed > 0 {
+		var retries []CrashForAnalysis
+		for _, br := range results {
+			if !br.Success {
+				if c, ok := crashMap[br.CustomID]; ok && len(retries) < 3 {
+					retries = append(retries, c)
+				}
+			}
+		}
+		if len(retries) > 0 {
+			t.logf("[Step A] Retrying %d failed batch requests synchronously", len(retries))
+			t.stepASync(ctx, retries)
+		}
+	}
+
+	t.logf("[Step A] Batch complete: %d succeeded, %d failed", succeeded, failed)
 }
 
 func (t *Triager) crashHash(summaries []CrashSummary) string {

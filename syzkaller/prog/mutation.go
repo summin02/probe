@@ -24,8 +24,8 @@ const maxBlobLen = uint64(100 << 10)
 // ct:          ChoiceTable for syscalls.
 // noMutate:    Set of IDs of syscalls which should not be mutated.
 // corpus:      The entire corpus, including original program p.
-func (p *Prog) Mutate(rs rand.Source, ncalls int, ct *ChoiceTable, noMutate map[int]bool, corpus []*Prog) {
-	p.MutateWithOpts(rs, ncalls, ct, noMutate, corpus, DefaultMutateOpts)
+func (p *Prog) Mutate(rs rand.Source, ncalls int, ct *ChoiceTable, noMutate map[int]bool, corpus []*Prog) string {
+	return p.MutateWithOpts(rs, ncalls, ct, noMutate, corpus, DefaultMutateOpts)
 }
 
 var DefaultMutateOpts = MutateOpts{
@@ -54,7 +54,7 @@ func (o MutateOpts) weight() int {
 }
 
 func (p *Prog) MutateWithOpts(rs rand.Source, ncalls int, ct *ChoiceTable, noMutate map[int]bool,
-	corpus []*Prog, opts MutateOpts) {
+	corpus []*Prog, opts MutateOpts) string {
 	if p.isUnsafe {
 		panic("mutation of unsafe programs is not supposed to be done")
 	}
@@ -70,6 +70,7 @@ func (p *Prog) MutateWithOpts(rs rand.Source, ncalls int, ct *ChoiceTable, noMut
 		corpus:   corpus,
 		opts:     opts,
 	}
+	var lastOp string
 	for stop, ok := false, false; !stop; stop = ok && len(p.Calls) != 0 && r.oneOf(opts.ExpectedIterations) {
 		val := r.Intn(totalWeight)
 		val -= opts.SquashWeight
@@ -77,30 +78,46 @@ func (p *Prog) MutateWithOpts(rs rand.Source, ncalls int, ct *ChoiceTable, noMut
 			// Not all calls have anything squashable,
 			// so this has lower priority in reality.
 			ok = ctx.squashAny()
+			if ok {
+				lastOp = "squash"
+			}
 			continue
 		}
 		val -= opts.SpliceWeight
 		if val < 0 {
 			ok = ctx.splice()
+			if ok {
+				lastOp = "splice"
+			}
 			continue
 		}
 		val -= opts.InsertWeight
 		if val < 0 {
 			ok = ctx.insertCall()
+			if ok {
+				lastOp = "insert"
+			}
 			continue
 		}
 		val -= opts.MutateArgWeight
 		if val < 0 {
 			ok = ctx.mutateArg()
+			if ok {
+				lastOp = "mutate_arg"
+			}
 			continue
 		}
 		ok = ctx.removeCall()
+		if ok {
+			lastOp = "remove"
+		}
 	}
 	p.sanitizeFix()
 	p.debugValidate()
 	if got := len(p.Calls); got < 1 || got > ncalls {
 		panic(fmt.Sprintf("bad number of calls after mutation: %v, want [1, %v]", got, ncalls))
 	}
+	return lastOp
 }
 
 // Internal state required for performing mutations -- currently this matches

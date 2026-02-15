@@ -114,6 +114,91 @@ func buildStrategyPrompt(snapshot *FuzzingSnapshot) (string, string) {
 		sb.WriteString("\n")
 	}
 
+	// PROBE: Phase 6 — DEzzer operator performance data.
+	if snapshot.DEzzerStatus != nil {
+		ds := snapshot.DEzzerStatus
+		sb.WriteString("### Mutation Operator Performance (DEzzer)\n")
+		sb.WriteString(fmt.Sprintf("  Generation: %d, Best Fitness: %.3f\n", ds.Generation, ds.BestFitness))
+		sb.WriteString("  Operator success rates: ")
+		for _, name := range []string{"splice", "insert", "mutate_arg", "squash", "remove"} {
+			if rate, ok := ds.OpSuccessRates[name]; ok {
+				sb.WriteString(fmt.Sprintf("%s=%.0f%% ", name, rate*100))
+			}
+		}
+		sb.WriteString("\n  Current DE delta from AI base: ")
+		for _, name := range []string{"splice", "insert", "mutate_arg", "squash", "remove"} {
+			if delta, ok := ds.DEDelta[name]; ok {
+				pct := (delta - 1.0) * 100
+				sb.WriteString(fmt.Sprintf("%s=%+.0f%% ", name, pct))
+			}
+		}
+		sb.WriteString("\n  Final weights: ")
+		for _, name := range []string{"splice", "insert", "mutate_arg", "squash", "remove"} {
+			if w, ok := ds.FinalWeights[name]; ok {
+				sb.WriteString(fmt.Sprintf("%s=%d ", name, w))
+			}
+		}
+		sb.WriteString("\n\n")
+	}
+
+	// PROBE: Phase 6 — Focus job results feedback.
+	if len(snapshot.FocusResults) > 0 {
+		sb.WriteString("### Focus Job Results (last hour)\n")
+		results := snapshot.FocusResults
+		if len(results) <= 5 {
+			// Show all results in detail.
+			for _, r := range results {
+				exitStr := "completed"
+				if r.EarlyExit {
+					exitStr = "early-exit"
+				}
+				sb.WriteString(fmt.Sprintf("  - \"%s\" (tier=%d): iters=%d, new_cov=%d, cov/exec=%.4f, %s\n",
+					r.Title, r.Tier, r.TotalIters, r.NewCoverage, r.CoveragePerExec, exitStr))
+			}
+		} else {
+			// Show recent 3 in detail + summary of rest.
+			recent := results[len(results)-3:]
+			older := results[:len(results)-3]
+			for _, r := range recent {
+				exitStr := "completed"
+				if r.EarlyExit {
+					exitStr = "early-exit"
+				}
+				sb.WriteString(fmt.Sprintf("  - \"%s\" (tier=%d): iters=%d, new_cov=%d, cov/exec=%.4f, %s\n",
+					r.Title, r.Tier, r.TotalIters, r.NewCoverage, r.CoveragePerExec, exitStr))
+			}
+			// Aggregate summary of older results.
+			totalCov := 0
+			earlyExitCount := 0
+			var totalCovPerExec float64
+			bestTitle, worstTitle := "", ""
+			bestCPE, worstCPE := -1.0, 999999.0
+			for _, r := range older {
+				totalCov += r.NewCoverage
+				totalCovPerExec += r.CoveragePerExec
+				if r.EarlyExit {
+					earlyExitCount++
+				}
+				if r.CoveragePerExec > bestCPE {
+					bestCPE = r.CoveragePerExec
+					bestTitle = r.Title
+				}
+				if r.CoveragePerExec < worstCPE {
+					worstCPE = r.CoveragePerExec
+					worstTitle = r.Title
+				}
+			}
+			avgCPE := totalCovPerExec / float64(len(older))
+			sb.WriteString(fmt.Sprintf("  Summary of %d older jobs: avg_cov/exec=%.4f, early_exit=%d/%d\n",
+				len(older), avgCPE, earlyExitCount, len(older)))
+			if bestTitle != "" {
+				sb.WriteString(fmt.Sprintf("    Best: \"%s\" (%.4f), Worst: \"%s\" (%.4f)\n",
+					bestTitle, bestCPE, worstTitle, worstCPE))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
 	// Coverage by file (top 20).
 	if len(snapshot.CoverageByFile) > 0 {
 		sb.WriteString("### Coverage by File (top 20)\n")
