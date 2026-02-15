@@ -388,6 +388,10 @@ struct probe_metrics {
 	uint64 double_free_count;
 	uint64 size_mismatch_count;
 	uint64 execution_start_ns;
+	// Phase 7:
+	uint64 commit_creds_count;   // 7d
+	uint64 priv_esc_count;       // 7d
+	uint64 cross_cache_count;    // 7c
 };
 
 static int ebpf_metrics_fd = -1;

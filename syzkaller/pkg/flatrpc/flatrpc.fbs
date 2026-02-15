@@ -259,6 +259,10 @@ table ProgInfoRaw {
 	ebpf_uaf_score		:uint32;
 	ebpf_double_free_count	:uint32;
 	ebpf_size_mismatch_count:uint32;
+	// Phase 7:
+	ebpf_commit_creds_count	:uint32;
+	ebpf_priv_esc_count	:uint32;
+	ebpf_cross_cache_count	:uint32;
 }
 
 // Result of executing a test program.

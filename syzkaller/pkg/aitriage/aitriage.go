@@ -118,6 +118,16 @@ type FuzzingSnapshot struct {
 	// PROBE: Phase 6 — DEzzer and Focus feedback data.
 	DEzzerStatus   *DEzzerStatusData   `json:"dezzer_status,omitempty"`
 	FocusResults   []FocusResultData   `json:"focus_results,omitempty"`
+
+	// PROBE: Phase 7b' — Slab-pair allocation patterns for AI strategy.
+	SlabSites []SlabSiteData `json:"slab_sites,omitempty"`
+}
+
+// SlabSiteData holds per-call-site alloc/free statistics from eBPF slab_sites map.
+type SlabSiteData struct {
+	CallSite   uint64 `json:"call_site"`
+	AllocCount uint64 `json:"alloc_count"`
+	FreeCount  uint64 `json:"free_count"`
 }
 
 // DEzzerStatusData is a serializable snapshot of DEzzer state for AI prompts.
@@ -337,6 +347,10 @@ type Triager struct {
 	nextBatch   time.Time // when the next automatic batch will run
 	strategy    *StrategyResult
 
+	// Phase 7e: GPTrace embedding client and cluster state.
+	embeddingClient *EmbeddingClient // nil if embedding not configured
+	clusters        *ClusterState
+
 	// Console log buffer for the /ai dashboard.
 	logMu  sync.Mutex
 	logBuf []LogEntry
@@ -349,6 +363,11 @@ type Triager struct {
 	OnStrategyResult func(result *StrategyResult)
 	GetSnapshot      func() *FuzzingSnapshot
 	GetCrashes       func() []CrashForAnalysis
+
+	// Phase 7a: SyzGPT callbacks for seed generation.
+	GetLFSTargets          func(maxTargets int) []LFSTarget
+	ValidateAndInjectProg  func(progText string) (bool, error)
+	GetAvailableSyscalls   func() []string
 }
 
 // CrashForAnalysis packages crash data needed for AI analysis.
@@ -370,10 +389,15 @@ func NewTriager(cfg mgrconfig.AITriageConfig, workdir string) (*Triager, error) 
 		return nil, err
 	}
 	t := &Triager{
-		cfg:         cfg,
-		client:      client,
-		batchClient: NewBatchClient(cfg),
-		workdir:     workdir,
+		cfg:             cfg,
+		client:          client,
+		batchClient:     NewBatchClient(cfg),
+		embeddingClient: NewEmbeddingClient(cfg),
+		workdir:         workdir,
+	}
+	// Phase 7e: Initialize cluster state if embedding is configured.
+	if t.embeddingClient != nil {
+		t.clusters = NewClusterState(workdir)
 	}
 	// Load existing cost tracker from disk.
 	t.cost = loadCostTracker(workdir)
@@ -595,6 +619,8 @@ func (t *Triager) runBatch(ctx context.Context) {
 	t.logf("Batch cycle starting...")
 	t.stepA(ctx)
 	t.stepB(ctx)
+	t.stepC(ctx)
+	t.stepEmbeddings(ctx)
 	t.logf("Batch cycle complete")
 }
 
@@ -966,6 +992,308 @@ func (t *Triager) stepB(ctx context.Context) {
 	t.logf("[Step B] Strategy applied: %d syscall weights, %d seed hints, %d focus targets",
 		nWeights, nHints, nFocus)
 	saveCostTracker(t.workdir, t.cost)
+}
+
+// stepC generates seed programs for low-frequency syscalls via LLM (Phase 7a: SyzGPT).
+// Processes up to 10 LFS targets per batch cycle.
+func (t *Triager) stepC(ctx context.Context) {
+	if t.GetLFSTargets == nil || t.ValidateAndInjectProg == nil {
+		return
+	}
+
+	const maxPerBatch = 10
+	targets := t.GetLFSTargets(maxPerBatch)
+	if len(targets) == 0 {
+		t.logf("[Step C] No low-frequency syscalls to target")
+		return
+	}
+
+	t.logf("[Step C] SyzGPT: %d LFS targets identified", len(targets))
+
+	// Get available syscalls for prompt.
+	var availableSyscalls []string
+	if t.GetAvailableSyscalls != nil {
+		availableSyscalls = t.GetAvailableSyscalls()
+	}
+
+	// Limit available syscalls in prompt to save tokens.
+	// Include only related families + a random sample.
+	generated, valid, injected := 0, 0, 0
+	var results []SyzGPTResult
+
+	for i, target := range targets {
+		select {
+		case <-ctx.Done():
+			t.logf("[Step C] Cancelled")
+			return
+		default:
+		}
+
+		t.logf("[Step C] [%d/%d] Generating seed for: %s (cov=%d)",
+			i+1, len(targets), target.Name, target.CoverageCount)
+
+		// Build relevant syscall list (same family + resource producers).
+		relevantSyscalls := filterRelevantSyscalls(target, availableSyscalls)
+
+		systemPrompt, userPrompt := buildSyzGPTPrompt(target, relevantSyscalls)
+		resp, err := t.client.Chat(ctx, systemPrompt, userPrompt)
+
+		call := APICall{
+			Time: time.Now(),
+			Type: "syzgpt",
+		}
+
+		if err != nil {
+			t.logf("[Step C] [%d/%d] LLM call failed: %v", i+1, len(targets), err)
+			call.Success = false
+			call.Error = err.Error()
+			t.cost.Record(call, t.cfg.Model)
+			results = append(results, SyzGPTResult{
+				TargetSyscall: target.Name,
+				Error:         err.Error(),
+			})
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		call.InputTokens = resp.InputTokens
+		call.OutputTokens = resp.OutputTokens
+		call.Success = true
+		generated++
+
+		progText, err := parseSyzGPTResponse(resp.Content)
+		if err != nil {
+			t.logf("[Step C] [%d/%d] Parse failed: %v", i+1, len(targets), err)
+			call.ResultSummary = fmt.Sprintf("parse_error: %s", target.Name)
+			t.cost.Record(call, t.cfg.Model)
+			results = append(results, SyzGPTResult{
+				TargetSyscall: target.Name,
+				ProgramText:   resp.Content,
+				Error:         err.Error(),
+			})
+			continue
+		}
+
+		// Validate and inject.
+		ok, err := t.ValidateAndInjectProg(progText)
+		result := SyzGPTResult{
+			TargetSyscall: target.Name,
+			ProgramText:   progText,
+			Valid:         ok || err == nil,
+			Injected:      ok,
+		}
+		if err != nil {
+			result.Error = err.Error()
+			t.logf("[Step C] [%d/%d] Invalid program for %s: %v", i+1, len(targets), target.Name, err)
+			call.ResultSummary = fmt.Sprintf("invalid: %s", target.Name)
+		} else if ok {
+			valid++
+			injected++
+			t.logf("[Step C] [%d/%d] Injected valid program for %s", i+1, len(targets), target.Name)
+			call.ResultSummary = fmt.Sprintf("injected: %s", target.Name)
+		}
+
+		t.cost.Record(call, t.cfg.Model)
+		results = append(results, result)
+
+		time.Sleep(2 * time.Second)
+	}
+
+	saveCostTracker(t.workdir, t.cost)
+	saveSyzGPTResults(t.workdir, results)
+
+	t.logf("[Step C] SyzGPT complete: %d generated, %d valid, %d injected (of %d targets)",
+		generated, valid, injected, len(targets))
+}
+
+// filterRelevantSyscalls filters the full syscall list to only include relevant ones
+// for the prompt: same call family + resource producers. Limits to 200 to save tokens.
+func filterRelevantSyscalls(target LFSTarget, allSyscalls []string) []string {
+	relevant := make(map[string]bool)
+
+	// Always include the target itself.
+	relevant[target.Name] = true
+
+	// Include resource producers.
+	for _, res := range target.InputResources {
+		for _, prod := range res.Producers {
+			relevant[prod] = true
+		}
+	}
+
+	// Include same CallName family.
+	for _, name := range allSyscalls {
+		if len(name) >= len(target.CallName) &&
+			(name == target.CallName || (len(name) > len(target.CallName) && name[len(target.CallName)] == '$' && name[:len(target.CallName)] == target.CallName)) {
+			relevant[name] = true
+		}
+	}
+
+	// Add common utility syscalls.
+	for _, name := range allSyscalls {
+		for _, common := range []string{"close", "dup", "mmap", "munmap", "read", "write", "ioctl"} {
+			if name == common || (len(name) > len(common) && name[len(common)] == '$' && name[:len(common)] == common) {
+				relevant[name] = true
+			}
+		}
+	}
+
+	var result []string
+	for _, name := range allSyscalls {
+		if relevant[name] {
+			result = append(result, name)
+		}
+	}
+
+	// If still too many, truncate.
+	if len(result) > 200 {
+		result = result[:200]
+	}
+
+	return result
+}
+
+// saveSyzGPTResults saves SyzGPT generation results for analysis.
+func saveSyzGPTResults(workdir string, results []SyzGPTResult) {
+	if len(results) == 0 {
+		return
+	}
+	path := filepath.Join(workdir, "ai-syzgpt-results.json")
+
+	// Load existing results.
+	var existing []SyzGPTResult
+	if data, err := os.ReadFile(path); err == nil {
+		json.Unmarshal(data, &existing)
+	}
+
+	existing = append(existing, results...)
+	// Keep only last 200 results.
+	if len(existing) > 200 {
+		existing = existing[len(existing)-200:]
+	}
+
+	data, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		return
+	}
+	os.WriteFile(path, data, 0644)
+}
+
+// SyzGPTStats returns SyzGPT generation statistics from saved results.
+func (t *Triager) SyzGPTStats() (generated, valid, injected int) {
+	path := filepath.Join(t.workdir, "ai-syzgpt-results.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, 0
+	}
+	var results []SyzGPTResult
+	if err := json.Unmarshal(data, &results); err != nil {
+		return 0, 0, 0
+	}
+	for _, r := range results {
+		generated++
+		if r.Valid {
+			valid++
+		}
+		if r.Injected {
+			injected++
+		}
+	}
+	return generated, valid, injected
+}
+
+// stepEmbeddings processes pending crash embeddings (Phase 7e).
+// Called during each batch cycle, processes up to 10 new crashes.
+func (t *Triager) stepEmbeddings(ctx context.Context) {
+	if t.embeddingClient == nil || t.clusters == nil || t.GetCrashes == nil {
+		return
+	}
+
+	crashes := t.GetCrashes()
+	pending := t.clusters.PendingCrashes(crashes)
+	if len(pending) == 0 {
+		return
+	}
+
+	// Process up to 10 per batch cycle to limit cost.
+	limit := 10
+	if len(pending) < limit {
+		limit = len(pending)
+	}
+	t.logf("[Embeddings] Processing %d/%d pending crash embeddings...", limit, len(pending))
+
+	for i := 0; i < limit; i++ {
+		c := pending[i]
+		text := PreprocessCrashReport(c.Report)
+		if text == "" {
+			text = c.Title // fallback to title if report is empty
+		}
+
+		vec, tokens, err := t.embeddingClient.Embed(text)
+		if err != nil {
+			t.logf("[Embeddings] FAILED for '%s': %v", c.Title, err)
+			continue
+		}
+
+		t.clusters.AddEmbedding(CrashEmbedding{
+			CrashID:   c.ID,
+			Title:     c.Title,
+			Vector:    vec,
+			Tokens:    tokens,
+			Timestamp: time.Now(),
+		})
+		t.logf("[Embeddings] Embedded '%s' (%d tokens)", c.Title, tokens)
+	}
+
+	_, clusters := t.clusters.Snapshot()
+	t.logf("[Embeddings] Done: %d total embeddings, %d clusters", len(t.clusters.Embeddings), len(clusters))
+}
+
+// EmbeddingCost returns embedding-specific cost snapshot (separate from LLM costs).
+func (t *Triager) EmbeddingCost() *CostSnapshot {
+	if t.embeddingClient == nil {
+		return nil
+	}
+	snap := t.embeddingClient.Cost()
+	return &snap
+}
+
+// ClusterSnapshot returns current embedding and cluster state.
+func (t *Triager) ClusterSnapshot() ([]CrashEmbedding, []CrashCluster) {
+	if t.clusters == nil {
+		return nil, nil
+	}
+	return t.clusters.Snapshot()
+}
+
+// GetCrashCluster returns the cluster ID for a specific crash.
+func (t *Triager) GetCrashCluster(crashID string) int {
+	if t.clusters == nil {
+		return 0
+	}
+	return t.clusters.GetClusterForCrash(crashID)
+}
+
+// EmbeddingsJSON returns a JSON blob with embedding/cluster state for the dashboard.
+// Avoids import cycle by returning []byte instead of typed structs.
+func (t *Triager) EmbeddingsJSON() []byte {
+	type embData struct {
+		EmbeddingCost *CostSnapshot    `json:"embedding_cost"`
+		Embeddings    []CrashEmbedding `json:"embeddings"`
+		Clusters      []CrashCluster   `json:"clusters"`
+	}
+	var ed embData
+	if t.embeddingClient != nil {
+		snap := t.embeddingClient.Cost()
+		ed.EmbeddingCost = &snap
+	}
+	if t.clusters != nil {
+		embs, clusters := t.clusters.Snapshot()
+		ed.Embeddings = embs
+		ed.Clusters = clusters
+	}
+	data, _ := json.Marshal(ed)
+	return data
 }
 
 func (t *Triager) analyzeCrash(ctx context.Context, c CrashForAnalysis) (*TriageResult, error) {

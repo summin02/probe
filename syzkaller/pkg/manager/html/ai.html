@@ -11,6 +11,8 @@ PROBE: AI-guided fuzzing dashboard page (Phase 3).
 <tr><td class="title">Today</td><td>{{.TodayCalls}} calls, {{.TodayTokens}} tokens, ${{printf "%.2f" .TodayCostUSD}} (~{{.TodayCostKRW}} KRW)</td></tr>
 <tr><td class="title">Total</td><td>{{.TotalCalls}} calls, {{.TotalTokens}} tokens, ${{printf "%.2f" .TotalCostUSD}} (~{{.TotalCostKRW}} KRW)</td></tr>
 <tr><td class="title">Analytics</td><td><a href="/ai/analytics">View detailed analytics &rarr;</a></td></tr>
+<tr><td class="title">Embeddings</td><td><a href="/ai/embeddings">View crash embeddings &amp; clusters &rarr;</a></td></tr>
+{{if .SyzGPTGenerated}}<tr><td class="title">SyzGPT</td><td>{{.SyzGPTGenerated}} generated, {{.SyzGPTValid}} valid ({{.SyzGPTValidRate}}%), {{.SyzGPTInjected}} injected</td></tr>{{end}}
 </table>
 
 {{if not .Disabled}}

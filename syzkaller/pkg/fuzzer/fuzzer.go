@@ -233,6 +233,18 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 		if res.Info.EbpfSizeMismatchCount > 0 {
 			fuzzer.statEbpfSizeMismatch.Add(int(res.Info.EbpfSizeMismatchCount))
 		}
+		// Phase 7d: Privilege escalation metrics.
+		if res.Info.EbpfCommitCredsCount > 0 {
+			fuzzer.statEbpfCommitCreds.Add(int(res.Info.EbpfCommitCredsCount))
+		}
+		if res.Info.EbpfPrivEscCount > 0 {
+			fuzzer.statEbpfPrivEsc.Add(int(res.Info.EbpfPrivEscCount))
+		}
+		// Phase 7c: Precise cross-cache metrics.
+		if res.Info.EbpfCrossCacheCount > 0 {
+			fuzzer.statEbpfCrossCache.Add(int(res.Info.EbpfCrossCacheCount))
+		}
+
 		// Cooldown check shared by double-free and UAF focus triggers.
 		fuzzer.focusMu.Lock()
 		ebpfCooldownOk := time.Since(fuzzer.lastEbpfFocus) >= 5*time.Minute
@@ -252,6 +264,19 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 				res.Info.EbpfUafScore, res.Info.EbpfReuseCount,
 				res.Info.EbpfRapidReuseCount, req.Prog)
 			fuzzer.AddFocusCandidate(req.Prog, fmt.Sprintf("PROBE:ebpf-uaf:%s", req.Prog.String()), 1)
+		}
+		// Phase 7d: Privilege escalation — top priority focus trigger.
+		if res.Info.EbpfPrivEscCount > 0 && res.Status != queue.Hanged && ebpfCooldownOk {
+			fuzzer.Logf(0, "PROBE: eBPF detected PRIVILEGE ESCALATION (priv_esc=%d, commit_creds=%d) in %s",
+				res.Info.EbpfPrivEscCount, res.Info.EbpfCommitCredsCount, req.Prog)
+			fuzzer.AddFocusCandidate(req.Prog, "PROBE:priv-esc", 1) // tier 1 = highest priority
+		}
+		// Phase 7c: Precise cross-cache detection — trigger focus.
+		if res.Info.EbpfCrossCacheCount > 0 && res.Status != queue.Hanged && ebpfCooldownOk {
+			fuzzer.Logf(0, "PROBE: eBPF detected CROSS-CACHE reallocation (count=%d) in %s",
+				res.Info.EbpfCrossCacheCount, req.Prog)
+			fuzzer.AddFocusCandidate(req.Prog,
+				fmt.Sprintf("PROBE:ebpf-cross-cache:%s", req.Prog.String()), 1)
 		}
 	}
 

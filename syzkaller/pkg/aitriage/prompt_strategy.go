@@ -199,6 +199,30 @@ func buildStrategyPrompt(snapshot *FuzzingSnapshot) (string, string) {
 		sb.WriteString("\n")
 	}
 
+	// PROBE: Phase 7b' — Slab-pair allocation patterns.
+	if len(snapshot.SlabSites) > 0 {
+		sb.WriteString("### Slab Allocation Patterns (top call sites from eBPF)\n")
+		sb.WriteString("Note: call_site addresses change across reboots (KASLR). Focus on alloc/free RATIOS.\n")
+		for _, s := range snapshot.SlabSites {
+			label := "balanced"
+			if s.FreeCount == 0 && s.AllocCount > 0 {
+				label = "allocator-only (leak candidate)"
+			} else if s.AllocCount == 0 && s.FreeCount > 0 {
+				label = "deallocator-only (UAF source candidate)"
+			} else if s.FreeCount > 0 && s.AllocCount > 0 {
+				ratio := float64(s.FreeCount) / float64(s.AllocCount)
+				if ratio > 1.2 {
+					label = "over-freeing (double-free candidate)"
+				} else if ratio < 0.5 {
+					label = "under-freeing (leak candidate)"
+				}
+			}
+			sb.WriteString(fmt.Sprintf("  Site 0x%x: %d allocs, %d frees — %s\n",
+				s.CallSite, s.AllocCount, s.FreeCount, label))
+		}
+		sb.WriteString("\n")
+	}
+
 	// Coverage by file (top 20).
 	if len(snapshot.CoverageByFile) > 0 {
 		sb.WriteString("### Coverage by File (top 20)\n")

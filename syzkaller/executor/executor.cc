@@ -164,6 +164,10 @@ struct alignas(8) OutputData {
 	std::atomic<uint64> ebpf_min_ns;
 	std::atomic<uint32> ebpf_double_free;
 	std::atomic<uint32> ebpf_size_mismatch;
+	// Phase 7:
+	std::atomic<uint32> ebpf_commit_creds;
+	std::atomic<uint32> ebpf_priv_esc;
+	std::atomic<uint32> ebpf_cross_cache;
 
 	void Reset()
 	{
@@ -179,6 +183,9 @@ struct alignas(8) OutputData {
 		ebpf_min_ns.store(0, std::memory_order_relaxed);
 		ebpf_double_free.store(0, std::memory_order_relaxed);
 		ebpf_size_mismatch.store(0, std::memory_order_relaxed);
+		ebpf_commit_creds.store(0, std::memory_order_relaxed);
+		ebpf_priv_esc.store(0, std::memory_order_relaxed);
+		ebpf_cross_cache.store(0, std::memory_order_relaxed);
 	}
 };
 
@@ -1203,6 +1210,9 @@ void execute_one()
 		output_data->ebpf_min_ns.store(metrics.min_reuse_delay_ns, std::memory_order_relaxed);
 		output_data->ebpf_double_free.store((uint32)metrics.double_free_count, std::memory_order_relaxed);
 		output_data->ebpf_size_mismatch.store((uint32)metrics.size_mismatch_count, std::memory_order_relaxed);
+		output_data->ebpf_commit_creds.store((uint32)metrics.commit_creds_count, std::memory_order_relaxed);
+		output_data->ebpf_priv_esc.store((uint32)metrics.priv_esc_count, std::memory_order_relaxed);
+		output_data->ebpf_cross_cache.store((uint32)metrics.cross_cache_count, std::memory_order_relaxed);
 	}
 #endif
 
@@ -1532,6 +1542,7 @@ flatbuffers::span<uint8_t> finish_output(OutputData* output, int proc_id, uint64
 	// PROBE: Read eBPF heap metrics from shared memory (written by exec child in execute_one).
 	uint32 ebpf_alloc = 0, ebpf_free = 0, ebpf_reuse = 0, ebpf_rapid = 0, ebpf_uaf_score = 0;
 	uint32 ebpf_double_free = 0, ebpf_size_mismatch = 0;
+	uint32 ebpf_commit_creds = 0, ebpf_priv_esc = 0, ebpf_cross_cache = 0;
 	uint64 ebpf_min_ns = 0;
 #if GOOS_linux
 	{
@@ -1542,6 +1553,9 @@ flatbuffers::span<uint8_t> finish_output(OutputData* output, int proc_id, uint64
 		ebpf_min_ns = output->ebpf_min_ns.load(std::memory_order_relaxed);
 		ebpf_double_free = output->ebpf_double_free.load(std::memory_order_relaxed);
 		ebpf_size_mismatch = output->ebpf_size_mismatch.load(std::memory_order_relaxed);
+		ebpf_commit_creds = output->ebpf_commit_creds.load(std::memory_order_relaxed);
+		ebpf_priv_esc = output->ebpf_priv_esc.load(std::memory_order_relaxed);
+		ebpf_cross_cache = output->ebpf_cross_cache.load(std::memory_order_relaxed);
 		// Compute UAF exploitability score (0-100)
 		// Note: cross-program contamination is prevented by epoch-based filtering
 		// in the BPF program (execution_start_ns), so no saturation guard needed.
@@ -1554,9 +1568,20 @@ flatbuffers::span<uint8_t> finish_output(OutputData* output, int proc_id, uint64
 		// Double-free = ALWAYS critical
 		if (ebpf_double_free > 0)
 			ebpf_uaf_score = 100;
-		// Size mismatch = cross-cache potential bonus
+		// Size mismatch = cross-cache potential bonus (heuristic)
 		if (ebpf_size_mismatch > 3)
 			ebpf_uaf_score += 10;
+		// Phase 7c: Precise cross-cache detection
+		if (ebpf_cross_cache > 0)
+			ebpf_uaf_score += 20;
+		if (ebpf_cross_cache > 3)
+			ebpf_uaf_score += 20; // total +40 for heavy cross-cache
+		// Phase 7d: Privilege escalation = max priority
+		if (ebpf_priv_esc > 0)
+			ebpf_uaf_score = 100;
+		// commit_creds (no priv-esc) = slight bonus
+		if (ebpf_commit_creds > 0 && ebpf_priv_esc == 0)
+			ebpf_uaf_score += 5;
 		if (ebpf_uaf_score > 100)
 			ebpf_uaf_score = 100;
 	}
@@ -1564,7 +1589,8 @@ flatbuffers::span<uint8_t> finish_output(OutputData* output, int proc_id, uint64
 	auto prog_info_off = rpc::CreateProgInfoRawDirect(fbb, &calls, &extra, 0, elapsed, freshness,
 							  ebpf_alloc, ebpf_free, ebpf_reuse, ebpf_rapid,
 							  ebpf_min_ns, ebpf_uaf_score,
-							  ebpf_double_free, ebpf_size_mismatch);
+							  ebpf_double_free, ebpf_size_mismatch,
+							  ebpf_commit_creds, ebpf_priv_esc, ebpf_cross_cache);
 	flatbuffers::Offset<flatbuffers::String> error_off = 0;
 	if (status == kFailStatus)
 		error_off = fbb.CreateString("process failed");

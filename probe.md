@@ -459,6 +459,99 @@ Final weights = Default × AI Base × DE Delta
 cd syzkaller && make host  # Builds all host tools including syz-manager
 ```
 
+## Phase 7: Core Detection Enhancement — **DONE**
+
+CO-RE (Compile Once, Run Everywhere) based infrastructure for portable kprobe access, plus 5 sub-tasks enhancing vulnerability detection capabilities.
+
+### 0. CO-RE Infrastructure
+
+**Goal**: Build environment for portable kprobe programs using `vmlinux.h` + libbpf CO-RE headers.
+
+**Changes**:
+- Generated `vmlinux.h` from kernel BTF via `bpftool btf dump` (added to `.gitignore`)
+- Vendored libbpf headers (`bpf_helpers.h`, `bpf_tracing.h`, `bpf_core_read.h`) into `executor/ebpf/bpf/`
+- Rewrote `probe_ebpf.bpf.h` to use `vmlinux.h` instead of manual type definitions
+- Build: `clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -I executor/ebpf/ -I executor/ebpf/bpf/ -c executor/ebpf/probe_ebpf.bpf.c -o executor/ebpf/probe_ebpf.bpf.o`
+
+### 7d. Privilege Escalation Detection — **DONE**
+
+**Goal**: Detect `commit_creds()` calls via kprobe to identify privilege escalation vulnerabilities.
+
+**Dual strategy**: `commit_creds_count` (all sandboxes, informational) + `priv_esc_count` (uid!=0→uid==0, sandbox_setuid only).
+
+**BPF program**: `kprobe_commit_creds` — CO-RE reads `new_cred->uid.val` and `task->real_cred->uid.val`.
+
+**Scoring**: `priv_esc_count > 0` → UAF score = 100 (top priority); `commit_creds_count > 0` → +5.
+
+**Files modified**: `executor/ebpf/probe_ebpf.bpf.h`, `probe_ebpf.bpf.c`, `executor_linux.h`, `executor.cc`, `flatrpc.fbs`, `flatrpc.go`, `flatrpc.h`, `syz-ebpf-loader/main.go`, `pkg/fuzzer/stats.go`, `pkg/fuzzer/fuzzer.go`
+
+### 7c. Cross-Cache Precise Detection — **DONE**
+
+**Goal**: Replace size-mismatch heuristic with cache-name-based tracking via kprobe on `kmem_cache_free`.
+
+**Design**: `cache_freed` LRU map (ptr → cache_name_hash), `kprobe_cache_free` stores hash on free, `trace_cache_alloc` checks if ptr was freed from a different cache.
+
+**Scoring**: `cross_cache_count > 0` → +20; `cross_cache_count > 3` → +40.
+
+**Files modified**: Same executor/flatrpc pipeline as 7d, plus `cache_freed` BPF map in `probe_ebpf.bpf.c`.
+
+### 7b'. Slab-Pair Boosting — **DONE**
+
+**Goal**: Collect per-call-site alloc/free patterns from eBPF, provide to AI strategy prompts.
+
+**Design**: `slab_sites` LRU_HASH map (512 entries), updated in existing `trace_kmalloc`/`trace_kfree` tracepoints. Manager reads pinned map via cilium/ebpf.
+
+**AI integration**: Strategy prompt includes top-10 slab sites with labels (allocator-only, deallocator-only, over-freeing, under-freeing, balanced).
+
+**Files modified**: `probe_ebpf.bpf.c` (slab_sites map), `syz-ebpf-loader/main.go` (pin), `syz-manager/ai_triage.go` (readSlabSites), `pkg/aitriage/prompt_strategy.go` (prompt section)
+
+### 7e. GPTrace Embedding Dedup — **DONE**
+
+**Goal**: Semantic crash deduplication using OpenAI text-embedding-3-small vectors + cosine similarity clustering.
+
+**Design**: `EmbeddingClient` (separate cost tracker from main LLM), `ClusterState` (agglomerative clustering, threshold=0.85), batch processing in `stepEmbeddings()`.
+
+**Config**: `embedding_model`, `embedding_api_key` fields in `ai_triage` config block. Missing → graceful skip.
+
+**Dashboard**: `/ai/embeddings` page with summary cards (total embeddings, clusters, cost) + cluster table + embedded crashes table. Tab navigation: AI Dashboard / Analytics / Embeddings.
+
+**Files modified**: `pkg/aitriage/embedding.go` (new), `pkg/aitriage/cluster.go` (new), `pkg/aitriage/aitriage.go`, `pkg/mgrconfig/config.go`, `pkg/manager/http.go`, `html/aiembeddings.html` (new), `html/ai.html`
+
+### 7a. SyzGPT Seed Generation — **DONE**
+
+**Goal**: Generate seed programs for low-frequency syscalls (LFS) via LLM to expand coverage.
+
+**Design**: Manager computes LFS list (EnabledCalls with coverage < 3), builds dependency chains using `ForeachCallType` + `ResourceDesc.Ctors`, finds corpus examples. `stepC()` in batch cycle generates up to 10 programs per hour. Programs validated via `prog.Deserialize()` (NonStrict), invalid → discarded.
+
+**Prompt**: System prompt with syzkaller format specification + target syscall args/resources/examples. Response parsed, validated, injected.
+
+**Dashboard**: SyzGPT stats (generated/valid/injected) shown on `/ai` page.
+
+**Files created**: `pkg/aitriage/prompt_syzgpt.go`, `syz-manager/syzgpt.go`
+**Files modified**: `pkg/aitriage/aitriage.go` (stepC, callbacks), `syz-manager/ai_triage.go` (wiring), `pkg/fuzzer/stats.go` (stats), `pkg/manager/http.go` (dashboard), `html/ai.html`
+
+### FlatBuffers (Phase 7)
+
+Three new fields added to `ProgInfoRaw`:
+- `ebpf_commit_creds_count` (field 13, VT=30)
+- `ebpf_priv_esc_count` (field 14, VT=32)
+- `ebpf_cross_cache_count` (field 15, VT=34)
+
+`StartObject` changed from 13 to 16. Manual edits in `flatrpc.go` and `flatrpc.h`.
+
+### Build
+
+```bash
+# BPF object (requires vmlinux.h — generate first if missing):
+# bpftool btf dump file /path/to/vmlinux format c > syzkaller/executor/ebpf/vmlinux.h
+clang -O2 -g -target bpf -D__TARGET_ARCH_x86 \
+    -I executor/ebpf/ -I executor/ebpf/bpf/ \
+    -c executor/ebpf/probe_ebpf.bpf.c \
+    -o executor/ebpf/probe_ebpf.bpf.o
+
+cd syzkaller && make host  # Builds all host tools including syz-manager
+```
+
 ## Phase 6+: Advanced Improvements Roadmap
 
 **Full roadmap**: See `syzkaller/probe_log/improvement_roadmap.md` for detailed descriptions, paper references, and cost projections.

@@ -88,6 +88,7 @@ func (serv *HTTPServer) Serve(ctx context.Context) error {
 	handle("/addcandidate", serv.httpAddCandidate)
 	handle("/ai", serv.httpAI)                        // PROBE: AI dashboard
 	handle("/ai/analytics", serv.httpAIAnalytics)    // PROBE: AI analytics
+	handle("/ai/embeddings", serv.httpAIEmbeddings) // PROBE: AI embeddings dashboard
 	handle("/ai/crash", serv.httpAICrash)             // PROBE: AI crash detail
 	handle("/api/ai/analyze", serv.httpAIAnalyze)     // PROBE: manual Step A
 	handle("/api/ai/log", serv.httpAILog)             // PROBE: console log stream
@@ -1581,6 +1582,20 @@ func (serv *HTTPServer) httpAI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Phase 7a: SyzGPT stats.
+	type syzGPTProvider interface {
+		SyzGPTStats() (int, int, int)
+	}
+	if sp, ok := serv.Triager.(syzGPTProvider); ok {
+		gen, valid, inj := sp.SyzGPTStats()
+		data.SyzGPTGenerated = gen
+		data.SyzGPTValid = valid
+		data.SyzGPTInjected = inj
+		if gen > 0 {
+			data.SyzGPTValidRate = valid * 100 / gen
+		}
+	}
+
 	executeTemplate(w, aiTemplate, &data)
 }
 
@@ -1766,6 +1781,12 @@ type UIAIPageData struct {
 	// Strategy.
 	HasStrategy bool
 	Strategy    UIAIStrategy
+
+	// SyzGPT stats (Phase 7a).
+	SyzGPTGenerated  int
+	SyzGPTValid      int
+	SyzGPTInjected   int
+	SyzGPTValidRate  int // percentage
 
 	// History.
 	History []UIAPICall
@@ -1988,6 +2009,86 @@ func (serv *HTTPServer) httpAIAnalytics(w http.ResponseWriter, r *http.Request) 
 	serv.buildAPIPerformance(&data, ad.DailyStats, ad.History)
 
 	executeTemplate(w, aiAnalyticsTemplate, &data)
+}
+
+func (serv *HTTPServer) httpAIEmbeddings(w http.ResponseWriter, r *http.Request) {
+	data := UIAIEmbeddingsData{
+		UIPageHeader: serv.pageHeader(r, "AI Embeddings"),
+	}
+
+	if serv.Triager == nil {
+		data.Disabled = true
+		executeTemplate(w, aiEmbeddingsTemplate, &data)
+		return
+	}
+
+	// Use type assertion to access Triager's embedding methods.
+	// Returns JSON-serializable data to avoid import cycle.
+	type embeddingProvider interface {
+		EmbeddingsJSON() []byte
+	}
+	if ep, ok := serv.Triager.(embeddingProvider); ok {
+		var ed struct {
+			EmbeddingCost struct {
+				TotalCostUSD float64 `json:"total_cost_usd"`
+				TotalInput   int     `json:"total_input_tokens"`
+				TotalCalls   int     `json:"total_calls"`
+			} `json:"embedding_cost"`
+			Embeddings []struct {
+				CrashID   string    `json:"crash_id"`
+				Title     string    `json:"title"`
+				Tokens    int       `json:"tokens"`
+				ClusterID int       `json:"cluster_id"`
+				Timestamp time.Time `json:"timestamp"`
+			} `json:"embeddings"`
+			Clusters []struct {
+				ID      int      `json:"id"`
+				Title   string   `json:"title"`
+				Members []string `json:"members"`
+				AvgSim  float64  `json:"avg_sim"`
+			} `json:"clusters"`
+		}
+		if raw := ep.EmbeddingsJSON(); raw != nil {
+			json.Unmarshal(raw, &ed)
+		}
+
+		data.EmbeddingCostUSD = ed.EmbeddingCost.TotalCostUSD
+		data.EmbeddingCostKRW = int(ed.EmbeddingCost.TotalCostUSD * 1450)
+		data.EmbeddingTokens = ed.EmbeddingCost.TotalInput
+		data.EmbeddingCalls = ed.EmbeddingCost.TotalCalls
+		data.TotalEmbeddings = len(ed.Embeddings)
+		data.TotalClusters = len(ed.Clusters)
+
+		for _, emb := range ed.Embeddings {
+			data.CrashClusters = append(data.CrashClusters, UICrashClusterRow{
+				CrashID:   emb.CrashID,
+				Title:     emb.Title,
+				ClusterID: emb.ClusterID,
+				Tokens:    emb.Tokens,
+			})
+			if emb.Timestamp.After(time.Time{}) {
+				data.LastEmbeddingTime = emb.Timestamp.Format("2006-01-02 15:04:05")
+			}
+		}
+
+		for _, c := range ed.Clusters {
+			row := UIClusterRow{
+				ID:       c.ID,
+				Title:    c.Title,
+				Members:  len(c.Members),
+				AvgSim:   c.AvgSim,
+				CrashIDs: c.Members,
+			}
+			if len(c.Members) > data.LargestCluster {
+				data.LargestCluster = len(c.Members)
+			}
+			data.Clusters = append(data.Clusters, row)
+		}
+	} else {
+		data.Disabled = true
+	}
+
+	executeTemplate(w, aiEmbeddingsTemplate, &data)
 }
 
 func (serv *HTTPServer) buildCostAnalytics(data *UIAIAnalyticsData, daily []dailyStat, history []historyEntry) {
@@ -2283,6 +2384,41 @@ func (serv *HTTPServer) buildAPIPerformance(data *UIAIAnalyticsData, daily []dai
 	}
 }
 
+// PROBE: Phase 7e — Embeddings dashboard data.
+type UIAIEmbeddingsData struct {
+	UIPageHeader
+	Disabled bool
+
+	TotalEmbeddings   int
+	PendingCount      int
+	TotalClusters     int
+	LargestCluster    int
+	LastEmbeddingTime string
+
+	EmbeddingCostUSD float64
+	EmbeddingCostKRW int
+	EmbeddingTokens  int
+	EmbeddingCalls   int
+
+	Clusters      []UIClusterRow
+	CrashClusters []UICrashClusterRow
+}
+
+type UIClusterRow struct {
+	ID       int
+	Title    string
+	Members  int
+	AvgSim   float64
+	CrashIDs []string
+}
+
+type UICrashClusterRow struct {
+	CrashID   string
+	Title     string
+	ClusterID int
+	Tokens    int
+}
+
 var (
 	mainTemplate          = createPage("main", UISummaryData{})
 	syscallsTemplate      = createPage("syscalls", UISyscallsData{})
@@ -2297,6 +2433,7 @@ var (
 	aiTemplate            = createPage("ai", UIAIPageData{})               // PROBE: AI dashboard
 	aiCrashTemplate       = createPage("aicrash", UIAICrashPage{})         // PROBE: AI crash detail
 	aiAnalyticsTemplate   = createPage("aianalytics", UIAIAnalyticsData{}) // PROBE: AI analytics
+	aiEmbeddingsTemplate  = createPage("aiembeddings", UIAIEmbeddingsData{}) // PROBE: AI embeddings
 )
 
 //go:embed html/*.html

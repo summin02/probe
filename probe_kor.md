@@ -440,6 +440,90 @@ Lazy DE: 100회마다 1세대 진화, population=10, sliding window=100.
 cd syzkaller && make host  # 모든 호스트 도구 빌드 (syz-manager 포함)
 ```
 
+## Phase 7: 핵심 탐지력 강화 (CO-RE 기반) — **완료**
+
+CO-RE (Compile Once, Run Everywhere) 기반 인프라로 이식 가능한 kprobe 접근 + 5개 서브태스크로 취약점 탐지 능력 강화.
+
+### 0. CO-RE 인프라 구축
+
+**목표**: `vmlinux.h` + libbpf CO-RE 헤더로 이식 가능한 kprobe 빌드 환경 구축.
+
+**변경사항**:
+- `bpftool btf dump`으로 커널 BTF에서 `vmlinux.h` 생성 (`.gitignore` 추가)
+- libbpf 헤더 3개 벤더링 (`executor/ebpf/bpf/`)
+- `probe_ebpf.bpf.h` 재작성: 수동 타입 정의 제거 → `vmlinux.h` include
+
+### 7d. 권한 상승 탐지 — **완료**
+
+**목표**: `commit_creds()` kprobe로 권한 상승 자동 탐지.
+
+**이중 전략**: `commit_creds_count` (전체, 정보용) + `priv_esc_count` (uid≠0→uid=0, sandbox_setuid 전용).
+
+**BPF**: `kprobe_commit_creds` — CO-RE로 `new_cred->uid.val`, `task->real_cred->uid.val` 읽기.
+
+**스코어링**: `priv_esc_count > 0` → score=100; `commit_creds_count > 0` → +5.
+
+### 7c. Cross-Cache 정밀 탐지 — **완료**
+
+**목표**: size_mismatch 휴리스틱을 cache명 기반 추적으로 대체.
+
+**설계**: `cache_freed` LRU 맵 (ptr→cache_name_hash), `kprobe_cache_free`로 해시 저장, `trace_cache_alloc`에서 다른 cache 재할당 탐지.
+
+**스코어링**: `cross_cache_count > 0` → +20; `> 3` → +40.
+
+### 7b'. Slab-Pair 부스팅 — **완료**
+
+**목표**: call_site별 alloc/free 패턴 수집 → AI 전략 프롬프트 반영.
+
+**설계**: `slab_sites` LRU_HASH 맵 (512개), 기존 tracepoint에서 업데이트. Manager가 cilium/ebpf로 읽기.
+
+**AI 통합**: 상위 10개 사이트의 할당/해제 비율 + 패턴 라벨 제공 (allocator-only, over-freeing 등).
+
+### 7e. GPTrace 임베딩 기반 크래시 Dedup — **완료**
+
+**목표**: OpenAI text-embedding-3-small로 크래시 벡터화 → 코사인 유사도 클러스터링.
+
+**설계**: `EmbeddingClient` (LLM과 별도 비용 추적), `ClusterState` (응집 클러스터링, threshold=0.85), `stepEmbeddings()`에서 배치 처리.
+
+**설정**: `ai_triage` 블록에 `embedding_model`, `embedding_api_key`. 미설정 → 기존 title dedup 유지.
+
+**대시보드**: `/ai/embeddings` 페이지 (임베딩 현황, 클러스터 테이블, 비용 추적). 탭 네비게이션 추가.
+
+### 7a. SyzGPT 시드 생성 — **완료**
+
+**목표**: 저빈도 syscall(LFS)에 대한 LLM 시드 프로그램 생성으로 커버리지 확대.
+
+**설계**: Manager가 LFS 목록 계산 (커버리지 < 3인 enabled syscall), `ForeachCallType` + `ResourceDesc.Ctors`로 의존성 체인 구축, corpus 예시 검색. `stepC()`에서 시간당 최대 10개 생성. `prog.Deserialize()`로 엄격 검증, 무효 → 폐기.
+
+**프롬프트**: syzkaller 형식 명세 + 타겟 syscall 인자/리소스/예시. 응답 파싱 → 검증 → 주입.
+
+**대시보드**: `/ai` 페이지에 SyzGPT 통계 (생성/유효/주입 수) 표시.
+
+**생성 파일**: `pkg/aitriage/prompt_syzgpt.go`, `syz-manager/syzgpt.go`
+**수정 파일**: `pkg/aitriage/aitriage.go`, `syz-manager/ai_triage.go`, `pkg/fuzzer/stats.go`, `pkg/manager/http.go`, `html/ai.html`
+
+### FlatBuffers (Phase 7)
+
+`ProgInfoRaw`에 3개 필드 추가:
+- `ebpf_commit_creds_count` (필드 13, VT=30)
+- `ebpf_priv_esc_count` (필드 14, VT=32)
+- `ebpf_cross_cache_count` (필드 15, VT=34)
+
+`StartObject` 13→16. `flatrpc.go` + `flatrpc.h` 수동 편집.
+
+### 빌드
+
+```bash
+# BPF 오브젝트 (vmlinux.h 필요 — 없으면 먼저 생성):
+# bpftool btf dump file /path/to/vmlinux format c > syzkaller/executor/ebpf/vmlinux.h
+clang -O2 -g -target bpf -D__TARGET_ARCH_x86 \
+    -I executor/ebpf/ -I executor/ebpf/bpf/ \
+    -c executor/ebpf/probe_ebpf.bpf.c \
+    -o executor/ebpf/probe_ebpf.bpf.o
+
+cd syzkaller && make host
+```
+
 ## Phase 6+: 고급 개선 로드맵
 
 **상세 로드맵**: `syzkaller/probe_log/improvement_roadmap.md` 참조 (기술 상세, 논문 레퍼런스, 비용 예측 포함).

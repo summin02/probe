@@ -6,11 +6,13 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 
+	"github.com/cilium/ebpf"
 	"github.com/google/syzkaller/pkg/aitriage"
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/prog"
@@ -34,6 +36,11 @@ func (mgr *Manager) initAITriage(ctx context.Context) {
 	triager.GetSnapshot = mgr.aiGetSnapshot
 	triager.OnTriageResult = mgr.aiOnTriageResult
 	triager.OnStrategyResult = mgr.aiOnStrategyResult
+
+	// Phase 7a: SyzGPT callbacks.
+	triager.GetLFSTargets = mgr.aiGetLFSTargets
+	triager.ValidateAndInjectProg = mgr.aiValidateAndInject
+	triager.GetAvailableSyscalls = mgr.aiGetAvailableSyscalls
 
 	mgr.triager = triager
 	mgr.http.Triager = triager
@@ -131,6 +138,9 @@ func (mgr *Manager) aiGetSnapshot() *aitriage.FuzzingSnapshot {
 			OpCovGains:      fr.OpCovGains,
 		})
 	}
+
+	// PROBE: Phase 7b' — Read slab_sites eBPF map for AI strategy.
+	snap.SlabSites = readSlabSites()
 
 	return snap
 }
@@ -248,6 +258,56 @@ func (mgr *Manager) aiOnStrategyResult(result *aitriage.StrategyResult) {
 
 	// Re-save strategy with applied results (seeds accepted, weight match counts).
 	aitriage.SaveStrategyResult(mgr.cfg.Workdir, result)
+}
+
+// aiGetAvailableSyscalls returns a sorted list of all enabled syscall names.
+func (mgr *Manager) aiGetAvailableSyscalls() []string {
+	f := mgr.fuzzer.Load()
+	if f == nil {
+		return nil
+	}
+	var names []string
+	for sc := range f.Config.EnabledCalls {
+		if !sc.Attrs.Disabled {
+			names = append(names, sc.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// readSlabSites reads the pinned slab_sites eBPF map and returns top-10 sites by activity.
+func readSlabSites() []aitriage.SlabSiteData {
+	const slabSitesPath = "/sys/fs/bpf/probe/slab_sites"
+	m, err := ebpf.LoadPinnedMap(slabSitesPath, nil)
+	if err != nil {
+		return nil // map not available — graceful skip
+	}
+	defer m.Close()
+
+	var sites []aitriage.SlabSiteData
+	var key uint64
+	// site_stats: {alloc_count: u64, free_count: u64} = 16 bytes
+	var val [16]byte
+	iter := m.Iterate()
+	for iter.Next(&key, &val) {
+		allocCount := binary.LittleEndian.Uint64(val[0:8])
+		freeCount := binary.LittleEndian.Uint64(val[8:16])
+		sites = append(sites, aitriage.SlabSiteData{
+			CallSite:   key,
+			AllocCount: allocCount,
+			FreeCount:  freeCount,
+		})
+	}
+
+	// Sort by total activity (alloc+free) descending, return top 10.
+	sort.Slice(sites, func(i, j int) bool {
+		return (sites[i].AllocCount + sites[i].FreeCount) > (sites[j].AllocCount + sites[j].FreeCount)
+	})
+	if len(sites) > 10 {
+		sites = sites[:10]
+	}
+	return sites
 }
 
 // findCorpusForSyscalls searches the corpus for programs that contain the most

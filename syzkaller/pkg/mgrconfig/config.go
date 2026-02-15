@@ -283,13 +283,18 @@ type FocusArea struct {
 	Weight float64 `json:"weight"`
 }
 
-// PROBE: AITriageConfig configures AI-guided fuzzing (Phase 3).
+// PROBE: AITriageConfig configures AI-guided fuzzing (Phase 3+7).
 type AITriageConfig struct {
 	Provider string `json:"provider,omitempty"` // "anthropic" or "openai", auto-detected from model name
 	Model    string `json:"model"`              // e.g. "claude-sonnet-4-5-20250929"
 	APIKey   string `json:"api_key"`
 	APIURL   string `json:"api_url,omitempty"` // custom endpoint (default: provider's official URL)
 	MaxTier  int    `json:"max_tier,omitempty"`  // max crash tier to analyze (default: 2)
+	// Phase 7e: GPTrace embedding-based crash dedup.
+	EmbeddingProvider string `json:"embedding_provider,omitempty"` // "openai" (default)
+	EmbeddingModel    string `json:"embedding_model,omitempty"`    // "text-embedding-3-small"
+	EmbeddingAPIKey   string `json:"embedding_api_key,omitempty"`  // OpenAI API key
+	EmbeddingAPIURL   string `json:"embedding_api_url,omitempty"`  // custom endpoint
 }
 
 type Subsystem struct {

@@ -3035,6 +3035,9 @@ type ProgInfoRawT struct {
 	EbpfUafScore             uint32          `json:"ebpf_uaf_score"`
 	EbpfDoubleFreeCount      uint32          `json:"ebpf_double_free_count"`
 	EbpfSizeMismatchCount    uint32          `json:"ebpf_size_mismatch_count"`
+	EbpfCommitCredsCount     uint32          `json:"ebpf_commit_creds_count"`
+	EbpfPrivEscCount         uint32          `json:"ebpf_priv_esc_count"`
+	EbpfCrossCacheCount      uint32          `json:"ebpf_cross_cache_count"`
 }
 
 func (t *ProgInfoRawT) Pack(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
@@ -3082,6 +3085,9 @@ func (t *ProgInfoRawT) Pack(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	ProgInfoRawAddEbpfUafScore(builder, t.EbpfUafScore)
 	ProgInfoRawAddEbpfDoubleFreeCount(builder, t.EbpfDoubleFreeCount)
 	ProgInfoRawAddEbpfSizeMismatchCount(builder, t.EbpfSizeMismatchCount)
+	ProgInfoRawAddEbpfCommitCredsCount(builder, t.EbpfCommitCredsCount)
+	ProgInfoRawAddEbpfPrivEscCount(builder, t.EbpfPrivEscCount)
+	ProgInfoRawAddEbpfCrossCacheCount(builder, t.EbpfCrossCacheCount)
 	return ProgInfoRawEnd(builder)
 }
 
@@ -3111,6 +3117,9 @@ func (rcv *ProgInfoRaw) UnPackTo(t *ProgInfoRawT) {
 	t.EbpfUafScore = rcv.EbpfUafScore()
 	t.EbpfDoubleFreeCount = rcv.EbpfDoubleFreeCount()
 	t.EbpfSizeMismatchCount = rcv.EbpfSizeMismatchCount()
+	t.EbpfCommitCredsCount = rcv.EbpfCommitCredsCount()
+	t.EbpfPrivEscCount = rcv.EbpfPrivEscCount()
+	t.EbpfCrossCacheCount = rcv.EbpfCrossCacheCount()
 }
 
 func (rcv *ProgInfoRaw) UnPack() *ProgInfoRawT {
@@ -3330,8 +3339,44 @@ func (rcv *ProgInfoRaw) MutateEbpfSizeMismatchCount(n uint32) bool {
 	return rcv._tab.MutateUint32Slot(28, n)
 }
 
+func (rcv *ProgInfoRaw) EbpfCommitCredsCount() uint32 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(30))
+	if o != 0 {
+		return rcv._tab.GetUint32(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ProgInfoRaw) MutateEbpfCommitCredsCount(n uint32) bool {
+	return rcv._tab.MutateUint32Slot(30, n)
+}
+
+func (rcv *ProgInfoRaw) EbpfPrivEscCount() uint32 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(32))
+	if o != 0 {
+		return rcv._tab.GetUint32(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ProgInfoRaw) MutateEbpfPrivEscCount(n uint32) bool {
+	return rcv._tab.MutateUint32Slot(32, n)
+}
+
+func (rcv *ProgInfoRaw) EbpfCrossCacheCount() uint32 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(34))
+	if o != 0 {
+		return rcv._tab.GetUint32(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ProgInfoRaw) MutateEbpfCrossCacheCount(n uint32) bool {
+	return rcv._tab.MutateUint32Slot(34, n)
+}
+
 func ProgInfoRawStart(builder *flatbuffers.Builder) {
-	builder.StartObject(13)
+	builder.StartObject(16)
 }
 func ProgInfoRawAddCalls(builder *flatbuffers.Builder, calls flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(calls), 0)
@@ -3377,6 +3422,15 @@ func ProgInfoRawAddEbpfDoubleFreeCount(builder *flatbuffers.Builder, ebpfDoubleF
 }
 func ProgInfoRawAddEbpfSizeMismatchCount(builder *flatbuffers.Builder, ebpfSizeMismatchCount uint32) {
 	builder.PrependUint32Slot(12, ebpfSizeMismatchCount, 0)
+}
+func ProgInfoRawAddEbpfCommitCredsCount(builder *flatbuffers.Builder, ebpfCommitCredsCount uint32) {
+	builder.PrependUint32Slot(13, ebpfCommitCredsCount, 0)
+}
+func ProgInfoRawAddEbpfPrivEscCount(builder *flatbuffers.Builder, ebpfPrivEscCount uint32) {
+	builder.PrependUint32Slot(14, ebpfPrivEscCount, 0)
+}
+func ProgInfoRawAddEbpfCrossCacheCount(builder *flatbuffers.Builder, ebpfCrossCacheCount uint32) {
+	builder.PrependUint32Slot(15, ebpfCrossCacheCount, 0)
 }
 func ProgInfoRawEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()
