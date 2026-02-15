@@ -139,6 +139,11 @@ type DEzzerStatusData struct {
 	AIBaseWeights  map[string]float64 `json:"ai_base_weights"`
 	DEDelta        map[string]float64 `json:"de_delta"`
 	FinalWeights   map[string]int     `json:"final_weights"`
+	// TS+DE hybrid fields (Phase 6 upgrade).
+	TSDelta      map[string]float64 `json:"ts_delta,omitempty"`
+	DECorrection map[string]float64 `json:"de_correction,omitempty"`
+	Saturated    bool               `json:"saturated,omitempty"`
+	WarmupDone   bool               `json:"warmup_done,omitempty"`
 }
 
 // FocusResultData is a serializable focus job result for AI prompts.

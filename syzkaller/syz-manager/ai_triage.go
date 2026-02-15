@@ -124,6 +124,10 @@ func (mgr *Manager) aiGetSnapshot() *aitriage.FuzzingSnapshot {
 			AIBaseWeights:  ds.AIBaseWeights,
 			DEDelta:        ds.DEDelta,
 			FinalWeights:   ds.FinalWeights,
+			TSDelta:        ds.TSDelta,
+			DECorrection:   ds.DECorrection,
+			Saturated:      ds.Saturated,
+			WarmupDone:     ds.WarmupDone,
 		}
 	}
 	for _, fr := range f.FocusResults() {

@@ -1,10 +1,26 @@
 // Copyright 2024 syzkaller project authors. All rights reserved.
 // Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
-// PROBE: Phase 6 — DEzzer: Differential Evolution optimizer for mutation operator weights.
-// Tracks per-operator success rates via a sliding window and evolves weight vectors
-// using a Lazy DE (DE/rand/1) strategy. Integrates with AI base weights via 3-layer
-// architecture: Default × AI Base × DE Delta.
+// PROBE: Phase 6 — DEzzer: Hybrid Thompson Sampling + Differential Evolution optimizer
+// for mutation operator weights.
+//
+// Architecture (4-Layer):
+//   Final Weight = Default × AI Base × TS Delta × DE Correction
+//
+// Thompson Sampling (primary): Per-operator Bayesian adaptation with Beta-Bernoulli posteriors.
+//   - Binary success/failure signals with path-weighted feedback
+//   - Time-based decay (configurable half-life)
+//   - IPW correction for selection bias
+//   - Saturation detection with relative performance mode
+//   - ±20% delta range
+//
+// Differential Evolution (secondary): Joint weight vector optimization for operator synergies.
+//   - ±5% correction range (narrower, supplementary role)
+//   - Independent fitness function (squared error from ideal, not TS-dependent)
+//   - Conflict detection with automatic dampening
+//
+// Risk mitigations: warm-up period, exploration rounds, crash bonus,
+// selective AI reset, starvation prevention, Phase 12 feature collection.
 package fuzzer
 
 import (
@@ -12,20 +28,68 @@ import (
 	"math"
 	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/google/syzkaller/prog"
 )
 
+// FeedbackSource identifies which execution path produced the result.
+type FeedbackSource int
+
 const (
-	dezzerWindowSize    = 100  // sliding window per operator
-	dezzerPopSize       = 10   // DE population size
-	dezzerEvolveEvery   = 100  // evolve 1 generation every N records
-	dezzerDeltaLimit    = 0.20 // ±20% delta from AI base
-	dezzerF             = 0.5  // DE mutation factor
-	dezzerCR            = 0.7  // DE crossover rate
-	dezzerNumOps        = 5    // squash, splice, insert, mutate_arg, remove
-	dezzerStagnantLimit = 50   // partial restart after N generations with no delta change
-	dezzerKeepBest      = 3    // keep top N individuals during partial restart
+	SourceMutate FeedbackSource = iota // mutateProgRequest (async, high volume, noisier)
+	SourceSmash                        // smashJob (sync, medium volume)
+	SourceFocus                        // focusJob (sync, low volume, highest quality)
+)
+
+const (
+	dezzerWindowSize = 100 // sliding window per operator
+	dezzerPopSize    = 10  // DE population size
+	dezzerEvolveEvery = 100 // evolve DE every N records
+	dezzerNumOps     = 5   // squash, splice, insert, mutate_arg, remove
+
+	// Thompson Sampling.
+	dezzerWarmupRecords       = 1000  // delta=1.0 during warm-up (no TS/DE applied)
+	dezzerDecayIntervalSec    = 30    // time-based decay interval (seconds)
+	dezzerDecayFactor         = 0.9   // alpha/beta *= this each decay interval (~3.3 min half-life)
+	dezzerAlphaFloor          = 1.0   // minimum alpha (preserves prior, prevents starvation)
+	dezzerBetaFloor           = 1.0   // minimum beta
+	dezzerSaturationThreshold = 0.001 // mean success prob below this → saturation mode
+
+	// TS delta range.
+	dezzerTSDeltaLimit = 0.20 // ±20%
+
+	// DE correction range (secondary, narrower).
+	dezzerDECorrLimit       = 0.05 // ±5%
+	dezzerF                 = 0.5  // DE mutation factor
+	dezzerCR                = 0.7  // DE crossover rate
+
+	// Path weights (feedback quality scaling).
+	dezzerWeightMutate = 1.0
+	dezzerWeightSmash  = 2.0
+	dezzerWeightFocus  = 3.0
+
+	// Exploration rounds.
+	dezzerExploreEvery  = 5000 // exploration round every N records
+	dezzerExploreLength = 50   // records in exploration mode (neutral delta)
+
+	// Inverse Propensity Weighting cap.
+	dezzerIPWCap = 5.0
+
+	// Conflict detection.
+	dezzerConflictThreshold = 3    // N/5 operators disagree → dampen DE
+	dezzerDampenedCorrLimit = 0.02 // ±2% when dampened
+	dezzerDampenRecoveryGen = 10   // generations until DE range restored
+
+	// DE stagnation.
+	dezzerStagnantLimit = 50
+	dezzerKeepBest      = 3
+
+	// Crash bonus.
+	dezzerCrashBonus = 10.0
+
+	// Phase 12 feature log.
+	dezzerFeatureLogSize = 100000
 )
 
 // opNames maps operator index to name.
@@ -41,30 +105,51 @@ func opNameToIndex(name string) int {
 	return -1
 }
 
-// DEzzer is the Differential Evolution optimizer for mutation weights.
+// DEzzer is a hybrid Thompson Sampling + Differential Evolution optimizer.
+// TS provides fast per-operator adaptation; DE finds operator combination synergies.
+// 4-Layer: Default × AI Base × TS Delta × DE Correction = Final Weights.
 type DEzzer struct {
 	mu sync.Mutex
 
 	// Per-operator performance tracking (sliding window).
 	opStats [dezzerNumOps]OperatorStats
 
-	// DE population (weight delta vectors).
+	// Thompson Sampling posteriors (per operator).
+	alpha [dezzerNumOps]float64
+	beta  [dezzerNumOps]float64
+
+	// DE population (correction vectors, ±5%).
 	population [dezzerPopSize]WeightVector
 	fitness    [dezzerPopSize]float64
 	bestIdx    int
 	generation int
 
-	// AI base weights (layer 2) — set by SetAIMutationHints.
+	// AI base weights (layer 2).
 	aiBaseWeights WeightVector
 
-	// Execution counter for lazy evolution.
-	totalRecords int64
+	// State tracking.
+	totalRecords  int64
+	warmupDone    bool
+	lastDecayTime time.Time
+	saturated     bool
 
-	// Stagnation detection for population diversity.
-	stagnantGens  int
-	lastBestDelta WeightVector
+	// Exploration mode.
+	explorationMode bool
+	explorationLeft int
 
-	// Logging function.
+	// Conflict detection.
+	conflictDampened bool
+	dampenGensLeft   int
+
+	// DE stagnation.
+	stagnantGens int
+	lastBestCorr WeightVector
+
+	// Phase 12 ML feature log (ring buffer).
+	featureLog    [dezzerFeatureLogSize]FeatureTuple
+	featureLogIdx int
+	featureLogLen int
+
 	logf func(level int, msg string, args ...any)
 }
 
@@ -81,7 +166,7 @@ type OpResult struct {
 }
 
 // WeightVector holds per-operator delta multipliers.
-// Values are centered on 1.0 (no change from AI base).
+// Values are centered on 1.0 (no change from base).
 type WeightVector struct {
 	Squash    float64
 	Splice    float64
@@ -90,34 +175,38 @@ type WeightVector struct {
 	Remove    float64
 }
 
-// NewDEzzer creates a new DEzzer with default initial state.
+// FeatureTuple stores (context, operator, reward) for Phase 12 ML training.
+type FeatureTuple struct {
+	Timestamp int64          // unix seconds
+	OpIdx     int            // operator index
+	CovGain   int            // raw coverage gain
+	Success   bool           // covGain > 0
+	Source    FeedbackSource // which feedback path
+	Saturated bool           // was system in saturation mode
+}
+
+// NewDEzzer creates a new hybrid TS+DE optimizer.
 func NewDEzzer(logf func(level int, msg string, args ...any)) *DEzzer {
 	d := &DEzzer{
-		logf: logf,
-		aiBaseWeights: WeightVector{
-			Squash:    1.0,
-			Splice:    1.0,
-			Insert:    1.0,
-			MutateArg: 1.0,
-			Remove:    1.0,
-		},
+		logf:          logf,
+		lastDecayTime: time.Now(),
+		aiBaseWeights: WeightVector{1.0, 1.0, 1.0, 1.0, 1.0},
 	}
-	// Initialize population with slight random variation around 1.0.
+	// Initialize TS posteriors with uniform prior.
+	for i := 0; i < dezzerNumOps; i++ {
+		d.alpha[i] = dezzerAlphaFloor
+		d.beta[i] = dezzerBetaFloor
+	}
+	// Initialize DE population around 1.0 (±5%).
 	rnd := rand.New(rand.NewSource(42))
 	for i := range d.population {
-		d.population[i] = WeightVector{
-			Squash:    1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-			Splice:    1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-			Insert:    1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-			MutateArg: 1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-			Remove:    1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-		}
+		d.population[i] = randomVector(rnd, dezzerDECorrLimit)
 	}
 	return d
 }
 
-// RecordResult records an operator execution result for DE optimization.
-func (d *DEzzer) RecordResult(op string, covGainBits int) {
+// RecordResult records an operator execution result for TS+DE optimization.
+func (d *DEzzer) RecordResult(op string, covGainBits int, source FeedbackSource) {
 	idx := opNameToIndex(op)
 	if idx < 0 {
 		return
@@ -126,28 +215,125 @@ func (d *DEzzer) RecordResult(op string, covGainBits int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Update sliding window.
+	// 1. Update sliding window.
 	stats := &d.opStats[idx]
 	wIdx := int(stats.Count % int64(dezzerWindowSize))
 	stats.Window[wIdx] = OpResult{CovGainBits: covGainBits}
 	stats.WindowIdx = (wIdx + 1) % dezzerWindowSize
 	stats.Count++
-
-	// Lazy evolution: evolve 1 generation every N records.
 	d.totalRecords++
-	if d.totalRecords%dezzerEvolveEvery == 0 {
-		d.recalcFitness()
-		d.evolveOneGeneration()
+
+	// 2. Time-based decay for TS posteriors.
+	d.maybeDecay()
+
+	// 3. Update TS posterior (binary signal + path weight + IPW).
+	success := covGainBits > 0
+	pathWeight := d.pathWeight(source)
+	ipwWeight := d.ipwWeight(idx)
+	weight := math.Min(pathWeight*ipwWeight, dezzerIPWCap)
+
+	// Easy-coverage filter: reduce weight during warm-up.
+	if !d.warmupDone {
+		weight *= 0.5
+	}
+
+	if success {
+		d.alpha[idx] += weight
+	} else {
+		d.beta[idx] += weight
+	}
+
+	// 4. Feature log for Phase 12 ML.
+	d.recordFeature(idx, covGainBits, success, source)
+
+	// 5. Check warm-up completion.
+	if !d.warmupDone && d.totalRecords >= dezzerWarmupRecords {
+		d.warmupDone = true
+		if d.logf != nil {
+			d.logf(0, "PROBE: DEzzer warm-up complete (%d records), activating TS+DE optimization", d.totalRecords)
+		}
+	}
+
+	// 6. Exploration round management.
+	if d.totalRecords%dezzerExploreEvery == 0 && d.warmupDone {
+		d.explorationMode = true
+		d.explorationLeft = dezzerExploreLength
+		if d.logf != nil {
+			d.logf(0, "PROBE: DEzzer exploration round (next %d records with neutral delta)", dezzerExploreLength)
+		}
+	}
+	if d.explorationMode {
+		d.explorationLeft--
+		if d.explorationLeft <= 0 {
+			d.explorationMode = false
+		}
+	}
+
+	// 7. DE evolution (lazy, every 100 records).
+	if d.totalRecords%dezzerEvolveEvery == 0 && d.warmupDone {
+		d.recalcDEFitness()
+		d.evolveDEOneGeneration()
 	}
 }
 
-// SetAIBaseWeights updates the AI base weights and resets the DE population.
+// RecordCrash gives a bonus to the operator that triggered a crash.
+// In saturation phase, crashes are the most valuable signal.
+func (d *DEzzer) RecordCrash(op string) {
+	idx := opNameToIndex(op)
+	if idx < 0 {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.alpha[idx] += dezzerCrashBonus
+	if d.logf != nil {
+		d.logf(0, "PROBE: DEzzer crash bonus for '%s' (alpha now %.1f)", op, d.alpha[idx])
+	}
+}
+
+// GetCurrentWeights returns final weights: Default × AI Base × TS Delta × DE Correction.
+func (d *DEzzer) GetCurrentWeights() prog.MutateOpts {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	defaults := prog.DefaultMutateOpts
+
+	// During warm-up or exploration, use neutral delta (Default × AI Base only).
+	if !d.warmupDone || d.explorationMode {
+		return prog.MutateOpts{
+			ExpectedIterations: defaults.ExpectedIterations,
+			MutateArgCount:     defaults.MutateArgCount,
+			SquashWeight:       maxInt(1, int(float64(defaults.SquashWeight)*d.aiBaseWeights.Squash)),
+			SpliceWeight:       maxInt(1, int(float64(defaults.SpliceWeight)*d.aiBaseWeights.Splice)),
+			InsertWeight:       maxInt(1, int(float64(defaults.InsertWeight)*d.aiBaseWeights.Insert)),
+			MutateArgWeight:    maxInt(1, int(float64(defaults.MutateArgWeight)*d.aiBaseWeights.MutateArg)),
+			RemoveCallWeight:   maxInt(1, int(float64(defaults.RemoveCallWeight)*d.aiBaseWeights.Remove)),
+		}
+	}
+
+	tsDelta := d.computeTSDelta()
+	deCorr := d.population[d.bestIdx]
+
+	return prog.MutateOpts{
+		ExpectedIterations: defaults.ExpectedIterations,
+		MutateArgCount:     defaults.MutateArgCount,
+		SquashWeight:       maxInt(1, int(float64(defaults.SquashWeight)*d.aiBaseWeights.Squash*tsDelta.Squash*deCorr.Squash)),
+		SpliceWeight:       maxInt(1, int(float64(defaults.SpliceWeight)*d.aiBaseWeights.Splice*tsDelta.Splice*deCorr.Splice)),
+		InsertWeight:       maxInt(1, int(float64(defaults.InsertWeight)*d.aiBaseWeights.Insert*tsDelta.Insert*deCorr.Insert)),
+		MutateArgWeight:    maxInt(1, int(float64(defaults.MutateArgWeight)*d.aiBaseWeights.MutateArg*tsDelta.MutateArg*deCorr.MutateArg)),
+		RemoveCallWeight:   maxInt(1, int(float64(defaults.RemoveCallWeight)*d.aiBaseWeights.Remove*tsDelta.Remove*deCorr.Remove)),
+	}
+}
+
+// SetAIBaseWeights updates the AI base weights with selective reset.
+// Small changes → soft TS reset (30% preserve) + DE kept.
+// Large changes → hard reset both TS and DE.
 func (d *DEzzer) SetAIBaseWeights(opts prog.MutateOpts) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	defaults := prog.DefaultMutateOpts
-	d.aiBaseWeights = WeightVector{
+	newBase := WeightVector{
 		Squash:    safeDiv(float64(opts.SquashWeight), float64(defaults.SquashWeight)),
 		Splice:    safeDiv(float64(opts.SpliceWeight), float64(defaults.SpliceWeight)),
 		Insert:    safeDiv(float64(opts.InsertWeight), float64(defaults.InsertWeight)),
@@ -155,59 +341,92 @@ func (d *DEzzer) SetAIBaseWeights(opts prog.MutateOpts) {
 		Remove:    safeDiv(float64(opts.RemoveCallWeight), float64(defaults.RemoveCallWeight)),
 	}
 
-	// Reset population to explore around new base.
-	rnd := rand.New(rand.NewSource(d.totalRecords))
-	for i := range d.population {
-		d.population[i] = WeightVector{
-			Squash:    1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-			Splice:    1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-			Insert:    1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-			MutateArg: 1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-			Remove:    1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-		}
-		d.fitness[i] = 0
+	// Compute change magnitude.
+	oldArr := vecToArr(d.aiBaseWeights)
+	newArr := vecToArr(newBase)
+	change := 0.0
+	for i := 0; i < dezzerNumOps; i++ {
+		change += math.Abs(newArr[i] - oldArr[i])
 	}
-	d.bestIdx = 0
-	d.generation = 0
-	d.stagnantGens = 0
-	d.lastBestDelta = WeightVector{}
+
+	d.aiBaseWeights = newBase
+
+	if change < 0.3 {
+		// Small change: soft reset TS (preserve 30%), keep DE.
+		for i := 0; i < dezzerNumOps; i++ {
+			d.alpha[i] = dezzerAlphaFloor + 0.3*(d.alpha[i]-dezzerAlphaFloor)
+			d.beta[i] = dezzerBetaFloor + 0.3*(d.beta[i]-dezzerBetaFloor)
+		}
+		// Inject AI direction hint into TS prior.
+		for i := 0; i < dezzerNumOps; i++ {
+			if newArr[i] > oldArr[i] {
+				d.alpha[i] += 2.0 // AI says boost → slight positive prior
+			} else if newArr[i] < oldArr[i] {
+				d.beta[i] += 2.0 // AI says suppress → slight negative prior
+			}
+		}
+		if d.logf != nil {
+			d.logf(0, "PROBE: DEzzer AI base minor update (change=%.2f) — TS soft reset, DE kept", change)
+		}
+	} else {
+		// Large change: hard reset TS + DE.
+		for i := 0; i < dezzerNumOps; i++ {
+			d.alpha[i] = dezzerAlphaFloor
+			d.beta[i] = dezzerBetaFloor
+			// Inject AI direction hint.
+			if newArr[i] > 1.0 {
+				d.alpha[i] += 2.0
+			} else if newArr[i] < 1.0 {
+				d.beta[i] += 2.0
+			}
+		}
+		rnd := rand.New(rand.NewSource(d.totalRecords))
+		for i := range d.population {
+			d.population[i] = randomVector(rnd, dezzerDECorrLimit)
+			d.fitness[i] = 0
+		}
+		d.bestIdx = 0
+		d.generation = 0
+		d.stagnantGens = 0
+		d.lastBestCorr = WeightVector{}
+		d.conflictDampened = false
+		if d.logf != nil {
+			d.logf(0, "PROBE: DEzzer AI base major update (change=%.2f) — full TS+DE reset", change)
+		}
+	}
 
 	if d.logf != nil {
-		d.logf(0, "PROBE: DEzzer AI base reset — Sq:%.2f Sp:%.2f In:%.2f MA:%.2f Rm:%.2f",
+		d.logf(0, "PROBE: DEzzer AI base — Sq:%.2f Sp:%.2f In:%.2f MA:%.2f Rm:%.2f",
 			d.aiBaseWeights.Squash, d.aiBaseWeights.Splice, d.aiBaseWeights.Insert,
 			d.aiBaseWeights.MutateArg, d.aiBaseWeights.Remove)
 	}
 }
 
-// GetCurrentWeights returns the final mutation weights: Default × AI Base × DE Delta.
-func (d *DEzzer) GetCurrentWeights() prog.MutateOpts {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+// --- Snapshot for dashboard and AI prompts ---
 
-	best := d.population[d.bestIdx]
-	defaults := prog.DefaultMutateOpts
-
-	return prog.MutateOpts{
-		ExpectedIterations: defaults.ExpectedIterations,
-		MutateArgCount:     defaults.MutateArgCount,
-		SquashWeight:       maxInt(1, int(float64(defaults.SquashWeight)*d.aiBaseWeights.Squash*best.Squash)),
-		SpliceWeight:       maxInt(1, int(float64(defaults.SpliceWeight)*d.aiBaseWeights.Splice*best.Splice)),
-		InsertWeight:       maxInt(1, int(float64(defaults.InsertWeight)*d.aiBaseWeights.Insert*best.Insert)),
-		MutateArgWeight:    maxInt(1, int(float64(defaults.MutateArgWeight)*d.aiBaseWeights.MutateArg*best.MutateArg)),
-		RemoveCallWeight:   maxInt(1, int(float64(defaults.RemoveCallWeight)*d.aiBaseWeights.Remove*best.Remove)),
-	}
-}
-
-// Snapshot returns a copy of the DEzzer state for external consumption (AI prompts, dashboard).
+// DEzzerSnapshot is the serializable state for external consumption.
 type DEzzerSnapshot struct {
-	Generation      int                `json:"generation"`
-	BestFitness     float64            `json:"best_fitness"`
-	TotalRecords    int64              `json:"total_records"`
-	OpSuccessRates  map[string]float64 `json:"op_success_rates"`
-	OpAvgCovGain    map[string]float64 `json:"op_avg_cov_gain"`
-	AIBaseWeights   map[string]float64 `json:"ai_base_weights"`
-	DEDelta         map[string]float64 `json:"de_delta"`
-	FinalWeights    map[string]int     `json:"final_weights"`
+	Generation   int                `json:"generation"`
+	TotalRecords int64              `json:"total_records"`
+	WarmupDone   bool               `json:"warmup_done"`
+	Saturated    bool               `json:"saturated"`
+
+	OpSuccessRates map[string]float64 `json:"op_success_rates"`
+	OpAvgCovGain   map[string]float64 `json:"op_avg_cov_gain"`
+
+	AIBaseWeights map[string]float64 `json:"ai_base_weights"`
+	TSDelta       map[string]float64 `json:"ts_delta"`
+	DECorrection  map[string]float64 `json:"de_correction"`
+	FinalWeights  map[string]int     `json:"final_weights"`
+
+	// Backward compat: DEDelta = TS×DE combined.
+	DEDelta     map[string]float64 `json:"de_delta"`
+	BestFitness float64            `json:"best_fitness"`
+
+	// TS diagnostics.
+	TSAlpha      map[string]float64 `json:"ts_alpha"`
+	TSBeta       map[string]float64 `json:"ts_beta"`
+	TSConfidence map[string]float64 `json:"ts_confidence"`
 }
 
 func (d *DEzzer) Snapshot() DEzzerSnapshot {
@@ -216,48 +435,419 @@ func (d *DEzzer) Snapshot() DEzzerSnapshot {
 
 	snap := DEzzerSnapshot{
 		Generation:     d.generation,
-		BestFitness:    d.fitness[d.bestIdx],
 		TotalRecords:   d.totalRecords,
+		WarmupDone:     d.warmupDone,
+		Saturated:      d.saturated,
+		BestFitness:    d.fitness[d.bestIdx],
 		OpSuccessRates: make(map[string]float64),
 		OpAvgCovGain:   make(map[string]float64),
 		AIBaseWeights:  make(map[string]float64),
-		DEDelta:        make(map[string]float64),
+		TSDelta:        make(map[string]float64),
+		DECorrection:   make(map[string]float64),
 		FinalWeights:   make(map[string]int),
+		DEDelta:        make(map[string]float64),
+		TSAlpha:        make(map[string]float64),
+		TSBeta:         make(map[string]float64),
+		TSConfidence:   make(map[string]float64),
+	}
+
+	tsDelta := d.computeTSDelta()
+	deCorr := d.population[d.bestIdx]
+	defaults := prog.DefaultMutateOpts
+	tsArr := vecToArr(tsDelta)
+	deArr := vecToArr(deCorr)
+	aiArr := vecToArr(d.aiBaseWeights)
+	defaultWeights := [dezzerNumOps]int{
+		defaults.SquashWeight, defaults.SpliceWeight, defaults.InsertWeight,
+		defaults.MutateArgWeight, defaults.RemoveCallWeight,
 	}
 
 	for i, name := range opNames {
 		sr, avg := d.opSuccessRate(i)
 		snap.OpSuccessRates[name] = sr
 		snap.OpAvgCovGain[name] = avg
+		snap.AIBaseWeights[name] = aiArr[i]
+		snap.TSDelta[name] = tsArr[i]
+		snap.DECorrection[name] = deArr[i]
+		snap.DEDelta[name] = tsArr[i] * deArr[i] // backward compat: combined
+		snap.FinalWeights[name] = maxInt(1, int(float64(defaultWeights[i])*aiArr[i]*tsArr[i]*deArr[i]))
+		snap.TSAlpha[name] = d.alpha[i]
+		snap.TSBeta[name] = d.beta[i]
+		snap.TSConfidence[name] = d.alpha[i] + d.beta[i]
 	}
-
-	best := d.population[d.bestIdx]
-	defaults := prog.DefaultMutateOpts
-
-	snap.AIBaseWeights["squash"] = d.aiBaseWeights.Squash
-	snap.AIBaseWeights["splice"] = d.aiBaseWeights.Splice
-	snap.AIBaseWeights["insert"] = d.aiBaseWeights.Insert
-	snap.AIBaseWeights["mutate_arg"] = d.aiBaseWeights.MutateArg
-	snap.AIBaseWeights["remove"] = d.aiBaseWeights.Remove
-
-	snap.DEDelta["squash"] = best.Squash
-	snap.DEDelta["splice"] = best.Splice
-	snap.DEDelta["insert"] = best.Insert
-	snap.DEDelta["mutate_arg"] = best.MutateArg
-	snap.DEDelta["remove"] = best.Remove
-
-	snap.FinalWeights["squash"] = maxInt(1, int(float64(defaults.SquashWeight)*d.aiBaseWeights.Squash*best.Squash))
-	snap.FinalWeights["splice"] = maxInt(1, int(float64(defaults.SpliceWeight)*d.aiBaseWeights.Splice*best.Splice))
-	snap.FinalWeights["insert"] = maxInt(1, int(float64(defaults.InsertWeight)*d.aiBaseWeights.Insert*best.Insert))
-	snap.FinalWeights["mutate_arg"] = maxInt(1, int(float64(defaults.MutateArgWeight)*d.aiBaseWeights.MutateArg*best.MutateArg))
-	snap.FinalWeights["remove"] = maxInt(1, int(float64(defaults.RemoveCallWeight)*d.aiBaseWeights.Remove*best.Remove))
 
 	return snap
 }
 
-// --- Internal DE methods (caller must hold d.mu) ---
+// StatusString returns a human-readable DEzzer status for logging.
+func (d *DEzzer) StatusString() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
-// opSuccessRate returns (successRate, avgCovGain) from the sliding window.
+	tsDelta := d.computeTSDelta()
+	deCorr := d.population[d.bestIdx]
+	tsArr := vecToArr(tsDelta)
+	deArr := vecToArr(deCorr)
+
+	var parts []string
+	for i, name := range opNames {
+		sr, _ := d.opSuccessRate(i)
+		parts = append(parts, fmt.Sprintf("%s=%.1f%%", name, sr*100))
+	}
+
+	return fmt.Sprintf("gen=%d TS={Sq:%.2f Sp:%.2f In:%.2f MA:%.2f Rm:%.2f} DE={Sq:%.3f Sp:%.3f In:%.3f MA:%.3f Rm:%.3f} rates=[%s]%s",
+		d.generation,
+		tsArr[0], tsArr[1], tsArr[2], tsArr[3], tsArr[4],
+		deArr[0], deArr[1], deArr[2], deArr[3], deArr[4],
+		joinStrings(parts, ", "),
+		d.statusSuffix())
+}
+
+// --- Thompson Sampling internals (caller must hold d.mu) ---
+
+// computeTSDelta computes TS delta from posteriors.
+// Normal mode: delta = prob/meanProb clamped to ±20%.
+// Saturation mode: relative performance (prob/maxProb).
+func (d *DEzzer) computeTSDelta() WeightVector {
+	var probs [dezzerNumOps]float64
+	for i := 0; i < dezzerNumOps; i++ {
+		probs[i] = d.alpha[i] / (d.alpha[i] + d.beta[i])
+	}
+
+	// Saturation detection.
+	meanProb := 0.0
+	for _, p := range probs {
+		meanProb += p
+	}
+	meanProb /= float64(dezzerNumOps)
+	d.saturated = meanProb < dezzerSaturationThreshold
+
+	var arr [dezzerNumOps]float64
+	lo := 1.0 - dezzerTSDeltaLimit
+	hi := 1.0 + dezzerTSDeltaLimit
+
+	if d.saturated {
+		// Saturation mode: relative performance (best operator = max delta).
+		maxProb := 0.0
+		for _, p := range probs {
+			if p > maxProb {
+				maxProb = p
+			}
+		}
+		if maxProb < 1e-10 {
+			maxProb = 1e-10
+		}
+		for i := 0; i < dezzerNumOps; i++ {
+			relative := probs[i] / maxProb
+			arr[i] = clampFloat(0.6+0.8*relative, lo, hi)
+		}
+	} else {
+		// Normal mode: proportional to prob/meanProb.
+		if meanProb < 1e-10 {
+			meanProb = 1e-10
+		}
+		for i := 0; i < dezzerNumOps; i++ {
+			arr[i] = clampFloat(probs[i]/meanProb, lo, hi)
+		}
+	}
+
+	return arrToVec(arr)
+}
+
+// maybeDecay applies time-based exponential decay to TS posteriors.
+func (d *DEzzer) maybeDecay() {
+	now := time.Now()
+	elapsed := now.Sub(d.lastDecayTime).Seconds()
+	if elapsed < float64(dezzerDecayIntervalSec) {
+		return
+	}
+
+	intervals := int(elapsed / float64(dezzerDecayIntervalSec))
+	factor := math.Pow(dezzerDecayFactor, float64(intervals))
+	for i := 0; i < dezzerNumOps; i++ {
+		d.alpha[i] = math.Max(dezzerAlphaFloor, d.alpha[i]*factor)
+		d.beta[i] = math.Max(dezzerBetaFloor, d.beta[i]*factor)
+	}
+	d.lastDecayTime = now
+}
+
+// pathWeight returns the feedback quality weight for the given source.
+func (d *DEzzer) pathWeight(source FeedbackSource) float64 {
+	switch source {
+	case SourceSmash:
+		return dezzerWeightSmash
+	case SourceFocus:
+		return dezzerWeightFocus
+	default:
+		return dezzerWeightMutate
+	}
+}
+
+// ipwWeight returns inverse propensity weight to correct for selection bias.
+// Rarely-selected operators get higher weight per observation.
+func (d *DEzzer) ipwWeight(opIdx int) float64 {
+	total := int64(0)
+	for i := 0; i < dezzerNumOps; i++ {
+		total += d.opStats[i].Count
+	}
+	if total == 0 {
+		return 1.0
+	}
+	propensity := float64(d.opStats[opIdx].Count) / float64(total)
+	if propensity < 0.05 {
+		propensity = 0.05 // cap at 20x to prevent extreme weights
+	}
+	return math.Min(1.0/propensity, dezzerIPWCap)
+}
+
+// --- DE internals (caller must hold d.mu) ---
+
+// recalcDEFitness uses INDEPENDENT data (raw sliding window, not TS posteriors).
+// Fitness = negative squared error from ideal correction vector.
+// ideal[op] = clamp(rate[op]/meanRate, 1±corrLimit)
+func (d *DEzzer) recalcDEFitness() {
+	var rates [dezzerNumOps]float64
+	for i := 0; i < dezzerNumOps; i++ {
+		rates[i], _ = d.opSuccessRate(i)
+	}
+	meanRate := 0.0
+	for _, r := range rates {
+		meanRate += r
+	}
+	meanRate /= float64(dezzerNumOps)
+
+	corrLimit := d.activeCorrLimit()
+
+	for p := range d.population {
+		arr := vecToArr(d.population[p])
+		fit := 0.0
+		for i := 0; i < dezzerNumOps; i++ {
+			ideal := 1.0
+			if meanRate > 1e-10 {
+				ideal = clampFloat(rates[i]/meanRate, 1.0-corrLimit, 1.0+corrLimit)
+			}
+			diff := arr[i] - ideal
+			fit -= diff * diff
+		}
+		d.fitness[p] = fit
+		if fit > d.fitness[d.bestIdx] {
+			d.bestIdx = p
+		}
+	}
+}
+
+// evolveDEOneGeneration runs one DE/rand/1 evolution step with ±5% correction.
+func (d *DEzzer) evolveDEOneGeneration() {
+	rnd := rand.New(rand.NewSource(d.totalRecords + int64(d.generation)))
+	corrLimit := d.activeCorrLimit()
+
+	// Conflict recovery countdown.
+	if d.conflictDampened {
+		d.dampenGensLeft--
+		if d.dampenGensLeft <= 0 {
+			d.conflictDampened = false
+			if d.logf != nil {
+				d.logf(0, "PROBE: DEzzer DE correction range restored to ±%.0f%%", dezzerDECorrLimit*100)
+			}
+		}
+	}
+
+	for i := range d.population {
+		a, b, c := i, i, i
+		for a == i {
+			a = rnd.Intn(dezzerPopSize)
+		}
+		for b == i || b == a {
+			b = rnd.Intn(dezzerPopSize)
+		}
+		for c == i || c == a || c == b {
+			c = rnd.Intn(dezzerPopSize)
+		}
+
+		trial := d.deMutantVector(d.population[a], d.population[b], d.population[c], rnd)
+		trial = clampVectorRange(trial, corrLimit)
+		trialFit := d.evalDEVector(trial, corrLimit)
+
+		if trialFit >= d.fitness[i] {
+			d.population[i] = trial
+			d.fitness[i] = trialFit
+			if trialFit > d.fitness[d.bestIdx] {
+				d.bestIdx = i
+			}
+		}
+	}
+
+	d.generation++
+
+	// Conflict detection.
+	d.checkConflict()
+
+	// Stagnation detection.
+	best := d.population[d.bestIdx]
+	if best == d.lastBestCorr {
+		d.stagnantGens++
+	} else {
+		d.stagnantGens = 0
+		d.lastBestCorr = best
+	}
+	if d.stagnantGens >= dezzerStagnantLimit {
+		d.partialRestart(corrLimit)
+	}
+
+	// Periodic logging.
+	if d.logf != nil && d.generation%10 == 0 {
+		tsDelta := d.computeTSDelta()
+		deCorr := d.population[d.bestIdx]
+		d.logf(0, "PROBE: DEzzer gen=%d TS={Sq:%.2f Sp:%.2f In:%.2f MA:%.2f Rm:%.2f} DE={Sq:%.3f Sp:%.3f In:%.3f MA:%.3f Rm:%.3f}%s",
+			d.generation,
+			tsDelta.Squash, tsDelta.Splice, tsDelta.Insert, tsDelta.MutateArg, tsDelta.Remove,
+			deCorr.Squash, deCorr.Splice, deCorr.Insert, deCorr.MutateArg, deCorr.Remove,
+			d.statusSuffix())
+	}
+}
+
+// checkConflict detects when TS and DE disagree on direction for ≥3/5 operators.
+func (d *DEzzer) checkConflict() {
+	tsDelta := d.computeTSDelta()
+	deCorr := d.population[d.bestIdx]
+	tsArr := vecToArr(tsDelta)
+	deArr := vecToArr(deCorr)
+
+	conflicts := 0
+	for i := 0; i < dezzerNumOps; i++ {
+		tsDir := tsArr[i] - 1.0
+		deDir := deArr[i] - 1.0
+		if (tsDir > 0.01 && deDir < -0.01) || (tsDir < -0.01 && deDir > 0.01) {
+			conflicts++
+		}
+	}
+
+	if conflicts >= dezzerConflictThreshold && !d.conflictDampened {
+		d.conflictDampened = true
+		d.dampenGensLeft = dezzerDampenRecoveryGen
+		if d.logf != nil {
+			d.logf(0, "PROBE: DEzzer TS/DE conflict (%d/%d), dampening DE to ±%.0f%%",
+				conflicts, dezzerNumOps, dezzerDampenedCorrLimit*100)
+		}
+		// Re-clamp population to dampened range.
+		for i := range d.population {
+			d.population[i] = clampVectorRange(d.population[i], dezzerDampenedCorrLimit)
+		}
+	}
+}
+
+func (d *DEzzer) evalDEVector(v WeightVector, corrLimit float64) float64 {
+	var rates [dezzerNumOps]float64
+	for i := 0; i < dezzerNumOps; i++ {
+		rates[i], _ = d.opSuccessRate(i)
+	}
+	meanRate := 0.0
+	for _, r := range rates {
+		meanRate += r
+	}
+	meanRate /= float64(dezzerNumOps)
+
+	arr := vecToArr(v)
+	fit := 0.0
+	for i := 0; i < dezzerNumOps; i++ {
+		ideal := 1.0
+		if meanRate > 1e-10 {
+			ideal = clampFloat(rates[i]/meanRate, 1.0-corrLimit, 1.0+corrLimit)
+		}
+		diff := arr[i] - ideal
+		fit -= diff * diff
+	}
+	return fit
+}
+
+func (d *DEzzer) activeCorrLimit() float64 {
+	if d.conflictDampened {
+		return dezzerDampenedCorrLimit
+	}
+	return dezzerDECorrLimit
+}
+
+func (d *DEzzer) statusSuffix() string {
+	suffix := ""
+	if d.saturated {
+		suffix += " [SATURATED]"
+	}
+	if d.conflictDampened {
+		suffix += " [DAMPENED]"
+	}
+	if d.explorationMode {
+		suffix += " [EXPLORING]"
+	}
+	return suffix
+}
+
+// partialRestart keeps the top dezzerKeepBest individuals and randomizes the rest.
+func (d *DEzzer) partialRestart(corrLimit float64) {
+	type idxFit struct {
+		idx int
+		fit float64
+	}
+	sorted := make([]idxFit, dezzerPopSize)
+	for i := range d.population {
+		sorted[i] = idxFit{i, d.fitness[i]}
+	}
+	for i := 0; i < len(sorted); i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if sorted[j].fit > sorted[i].fit {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+
+	keep := make(map[int]bool)
+	for i := 0; i < dezzerKeepBest && i < len(sorted); i++ {
+		keep[sorted[i].idx] = true
+	}
+
+	rnd := rand.New(rand.NewSource(d.totalRecords + int64(d.generation)*7))
+	for i := range d.population {
+		if keep[i] {
+			continue
+		}
+		d.population[i] = randomVector(rnd, corrLimit)
+		d.fitness[i] = d.evalDEVector(d.population[i], corrLimit)
+	}
+
+	d.bestIdx = 0
+	for i := 1; i < dezzerPopSize; i++ {
+		if d.fitness[i] > d.fitness[d.bestIdx] {
+			d.bestIdx = i
+		}
+	}
+	d.stagnantGens = 0
+	d.lastBestCorr = d.population[d.bestIdx]
+
+	if d.logf != nil {
+		best := d.population[d.bestIdx]
+		d.logf(0, "PROBE: DEzzer DE partial restart (kept top %d) — gen=%d corr={Sq:%.3f Sp:%.3f In:%.3f MA:%.3f Rm:%.3f}",
+			dezzerKeepBest, d.generation, best.Squash, best.Splice, best.Insert, best.MutateArg, best.Remove)
+	}
+}
+
+func (d *DEzzer) deMutantVector(a, b, c WeightVector, rnd *rand.Rand) WeightVector {
+	jrand := rnd.Intn(dezzerNumOps)
+	aArr := vecToArr(a)
+	bArr := vecToArr(b)
+	cArr := vecToArr(c)
+
+	var result [dezzerNumOps]float64
+	for j := 0; j < dezzerNumOps; j++ {
+		if rnd.Float64() < dezzerCR || j == jrand {
+			result[j] = aArr[j] + dezzerF*(bArr[j]-cArr[j])
+		} else {
+			result[j] = aArr[j]
+		}
+	}
+	return arrToVec(result)
+}
+
+// --- Common helpers ---
+
 func (d *DEzzer) opSuccessRate(opIdx int) (float64, float64) {
 	stats := &d.opStats[opIdx]
 	n := int(stats.Count)
@@ -279,220 +869,50 @@ func (d *DEzzer) opSuccessRate(opIdx int) (float64, float64) {
 	return float64(successes) / float64(n), float64(totalGain) / float64(n)
 }
 
-// recalcFitness recalculates fitness for all population members.
-// fitness = weighted sum of operator (successRate × avgCovGain).
-func (d *DEzzer) recalcFitness() {
-	var rates [dezzerNumOps]float64
-	var gains [dezzerNumOps]float64
-	for i := 0; i < dezzerNumOps; i++ {
-		rates[i], gains[i] = d.opSuccessRate(i)
+func (d *DEzzer) recordFeature(opIdx int, covGain int, success bool, source FeedbackSource) {
+	d.featureLog[d.featureLogIdx] = FeatureTuple{
+		Timestamp: time.Now().Unix(),
+		OpIdx:     opIdx,
+		CovGain:   covGain,
+		Success:   success,
+		Source:    source,
+		Saturated: d.saturated,
 	}
-
-	for p := range d.population {
-		vec := d.population[p]
-		deltas := [dezzerNumOps]float64{vec.Squash, vec.Splice, vec.Insert, vec.MutateArg, vec.Remove}
-
-		fit := 0.0
-		for i := 0; i < dezzerNumOps; i++ {
-			// Fitness rewards operators proportional to delta × success × gain.
-			fit += deltas[i] * rates[i] * (gains[i] + 1)
-		}
-		d.fitness[p] = fit
-		if fit > d.fitness[d.bestIdx] {
-			d.bestIdx = p
-		}
+	d.featureLogIdx = (d.featureLogIdx + 1) % dezzerFeatureLogSize
+	if d.featureLogLen < dezzerFeatureLogSize {
+		d.featureLogLen++
 	}
 }
 
-// evolveOneGeneration runs one DE/rand/1 evolution step.
-func (d *DEzzer) evolveOneGeneration() {
-	rnd := rand.New(rand.NewSource(d.totalRecords + int64(d.generation)))
+// --- Utility functions ---
 
-	for i := range d.population {
-		// Select 3 distinct random indices != i.
-		a, b, c := i, i, i
-		for a == i {
-			a = rnd.Intn(dezzerPopSize)
-		}
-		for b == i || b == a {
-			b = rnd.Intn(dezzerPopSize)
-		}
-		for c == i || c == a || c == b {
-			c = rnd.Intn(dezzerPopSize)
-		}
-
-		// Create mutant vector: a + F*(b-c).
-		trial := d.mutantVector(d.population[a], d.population[b], d.population[c], rnd)
-
-		// Clamp to [1-deltaLimit, 1+deltaLimit].
-		trial = d.clampVector(trial)
-
-		// Evaluate trial (using current operator stats).
-		trialFit := d.evalVector(trial)
-
-		if trialFit >= d.fitness[i] {
-			d.population[i] = trial
-			d.fitness[i] = trialFit
-			if trialFit > d.fitness[d.bestIdx] {
-				d.bestIdx = i
-			}
-		}
-	}
-
-	d.generation++
-
-	// Stagnation detection: if best delta unchanged for N generations, partial restart.
-	best := d.population[d.bestIdx]
-	if best == d.lastBestDelta {
-		d.stagnantGens++
-	} else {
-		d.stagnantGens = 0
-		d.lastBestDelta = best
-	}
-	if d.stagnantGens >= dezzerStagnantLimit {
-		d.partialRestart()
-	}
-
-	if d.logf != nil && d.generation%10 == 0 {
-		best = d.population[d.bestIdx]
-		d.logf(0, "PROBE: DEzzer gen=%d best_fitness=%.3f delta={Sq:%.2f Sp:%.2f In:%.2f MA:%.2f Rm:%.2f}",
-			d.generation, d.fitness[d.bestIdx],
-			best.Squash, best.Splice, best.Insert, best.MutateArg, best.Remove)
+func randomVector(rnd *rand.Rand, limit float64) WeightVector {
+	return WeightVector{
+		Squash:    1.0 + (rnd.Float64()-0.5)*2*limit,
+		Splice:    1.0 + (rnd.Float64()-0.5)*2*limit,
+		Insert:    1.0 + (rnd.Float64()-0.5)*2*limit,
+		MutateArg: 1.0 + (rnd.Float64()-0.5)*2*limit,
+		Remove:    1.0 + (rnd.Float64()-0.5)*2*limit,
 	}
 }
 
-// partialRestart keeps the top dezzerKeepBest individuals and randomizes the rest.
-// This restores population diversity when DE converges prematurely.
-func (d *DEzzer) partialRestart() {
-	// Sort population indices by fitness (descending).
-	type idxFit struct {
-		idx int
-		fit float64
-	}
-	sorted := make([]idxFit, dezzerPopSize)
-	for i := range d.population {
-		sorted[i] = idxFit{i, d.fitness[i]}
-	}
-	for i := 0; i < len(sorted); i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if sorted[j].fit > sorted[i].fit {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
-	}
-
-	// Mark which indices to keep.
-	keep := make(map[int]bool)
-	for i := 0; i < dezzerKeepBest && i < len(sorted); i++ {
-		keep[sorted[i].idx] = true
-	}
-
-	// Randomize non-kept individuals.
-	rnd := rand.New(rand.NewSource(d.totalRecords + int64(d.generation)*7))
-	for i := range d.population {
-		if keep[i] {
-			continue
-		}
-		d.population[i] = WeightVector{
-			Squash:    1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-			Splice:    1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-			Insert:    1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-			MutateArg: 1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-			Remove:    1.0 + (rnd.Float64()-0.5)*2*dezzerDeltaLimit,
-		}
-		d.fitness[i] = d.evalVector(d.population[i])
-	}
-
-	// Update bestIdx.
-	d.bestIdx = 0
-	for i := 1; i < dezzerPopSize; i++ {
-		if d.fitness[i] > d.fitness[d.bestIdx] {
-			d.bestIdx = i
-		}
-	}
-
-	d.stagnantGens = 0
-	d.lastBestDelta = d.population[d.bestIdx]
-
-	if d.logf != nil {
-		best := d.population[d.bestIdx]
-		d.logf(0, "PROBE: DEzzer partial restart (kept top %d) — gen=%d new_best={Sq:%.2f Sp:%.2f In:%.2f MA:%.2f Rm:%.2f}",
-			dezzerKeepBest, d.generation, best.Squash, best.Splice, best.Insert, best.MutateArg, best.Remove)
-	}
+func vecToArr(v WeightVector) [dezzerNumOps]float64 {
+	return [dezzerNumOps]float64{v.Squash, v.Splice, v.Insert, v.MutateArg, v.Remove}
 }
 
-func (d *DEzzer) mutantVector(a, b, c WeightVector, rnd *rand.Rand) WeightVector {
-	trial := WeightVector{}
-	// DE/rand/1 with binomial crossover.
-	jrand := rnd.Intn(dezzerNumOps) // ensure at least one dimension from mutant
-	aArr := vecToArr(a)
-	bArr := vecToArr(b)
-	cArr := vecToArr(c)
-	curArr := vecToArr(d.population[0]) // current (will use in crossover)
-	_ = curArr
-
-	var result [dezzerNumOps]float64
-	for j := 0; j < dezzerNumOps; j++ {
-		if rnd.Float64() < dezzerCR || j == jrand {
-			result[j] = aArr[j] + dezzerF*(bArr[j]-cArr[j])
-		} else {
-			result[j] = aArr[j] // keep from base vector
-		}
-	}
-	trial.Squash = result[0]
-	trial.Splice = result[1]
-	trial.Insert = result[2]
-	trial.MutateArg = result[3]
-	trial.Remove = result[4]
-	return trial
+func arrToVec(a [dezzerNumOps]float64) WeightVector {
+	return WeightVector{a[0], a[1], a[2], a[3], a[4]}
 }
 
-func (d *DEzzer) clampVector(v WeightVector) WeightVector {
-	lo := 1.0 - dezzerDeltaLimit
-	hi := 1.0 + dezzerDeltaLimit
+func clampVectorRange(v WeightVector, limit float64) WeightVector {
+	lo := 1.0 - limit
+	hi := 1.0 + limit
 	v.Squash = clampFloat(v.Squash, lo, hi)
 	v.Splice = clampFloat(v.Splice, lo, hi)
 	v.Insert = clampFloat(v.Insert, lo, hi)
 	v.MutateArg = clampFloat(v.MutateArg, lo, hi)
 	v.Remove = clampFloat(v.Remove, lo, hi)
 	return v
-}
-
-func (d *DEzzer) evalVector(v WeightVector) float64 {
-	var rates [dezzerNumOps]float64
-	var gains [dezzerNumOps]float64
-	for i := 0; i < dezzerNumOps; i++ {
-		rates[i], gains[i] = d.opSuccessRate(i)
-	}
-	deltas := [dezzerNumOps]float64{v.Squash, v.Splice, v.Insert, v.MutateArg, v.Remove}
-	fit := 0.0
-	for i := 0; i < dezzerNumOps; i++ {
-		fit += deltas[i] * rates[i] * (gains[i] + 1)
-	}
-	return fit
-}
-
-// StatusString returns a human-readable DEzzer status for logging.
-func (d *DEzzer) StatusString() string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	best := d.population[d.bestIdx]
-	var parts []string
-	for i, name := range opNames {
-		sr, _ := d.opSuccessRate(i)
-		parts = append(parts, fmt.Sprintf("%s=%.0f%%", name, sr*100))
-	}
-	return fmt.Sprintf("gen=%d fit=%.3f delta={Sq:%.2f Sp:%.2f In:%.2f MA:%.2f Rm:%.2f} rates=[%s]",
-		d.generation, d.fitness[d.bestIdx],
-		best.Squash, best.Splice, best.Insert, best.MutateArg, best.Remove,
-		joinStrings(parts, ", "))
-}
-
-// --- Utility functions ---
-
-func vecToArr(v WeightVector) [dezzerNumOps]float64 {
-	return [dezzerNumOps]float64{v.Squash, v.Splice, v.Insert, v.MutateArg, v.Remove}
 }
 
 func clampFloat(v, lo, hi float64) float64 {

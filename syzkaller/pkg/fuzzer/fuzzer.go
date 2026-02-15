@@ -186,7 +186,7 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 			if len(triage) > 0 {
 				covGain = len(triage)
 			}
-			fuzzer.dezzer.RecordResult(req.MutOp, covGain)
+			fuzzer.dezzer.RecordResult(req.MutOp, covGain, SourceMutate)
 		}
 
 		if len(triage) != 0 {
@@ -288,6 +288,11 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 			fuzzer.AddFocusCandidate(req.Prog,
 				fmt.Sprintf("PROBE:ebpf-cross-cache:%s", req.Prog.String()), 1)
 		}
+	}
+
+	// PROBE: DEzzer crash bonus — reward the operator that led to a crash.
+	if res.Status == queue.Crashed && req.MutOp != "" && fuzzer.dezzer != nil {
+		fuzzer.dezzer.RecordCrash(req.MutOp)
 	}
 
 	// Corpus candidates may have flaky coverage, so we give them a second chance.

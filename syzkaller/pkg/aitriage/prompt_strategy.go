@@ -114,18 +114,44 @@ func buildStrategyPrompt(snapshot *FuzzingSnapshot) (string, string) {
 		sb.WriteString("\n")
 	}
 
-	// PROBE: Phase 6 — DEzzer operator performance data.
+	// PROBE: Phase 6 — DEzzer operator performance data (TS+DE hybrid).
 	if snapshot.DEzzerStatus != nil {
 		ds := snapshot.DEzzerStatus
-		sb.WriteString("### Mutation Operator Performance (DEzzer)\n")
-		sb.WriteString(fmt.Sprintf("  Generation: %d, Best Fitness: %.3f\n", ds.Generation, ds.BestFitness))
-		sb.WriteString("  Operator success rates: ")
+		sb.WriteString("### Mutation Operator Performance (DEzzer TS+DE Hybrid)\n")
+		sb.WriteString(fmt.Sprintf("  Generation: %d", ds.Generation))
+		if ds.Saturated {
+			sb.WriteString(" [SATURATED]")
+		}
+		if !ds.WarmupDone {
+			sb.WriteString(" [WARMING UP]")
+		}
+		sb.WriteString("\n  Operator success rates: ")
 		for _, name := range []string{"splice", "insert", "mutate_arg", "squash", "remove"} {
 			if rate, ok := ds.OpSuccessRates[name]; ok {
-				sb.WriteString(fmt.Sprintf("%s=%.0f%% ", name, rate*100))
+				sb.WriteString(fmt.Sprintf("%s=%.1f%% ", name, rate*100))
 			}
 		}
-		sb.WriteString("\n  Current DE delta from AI base: ")
+		// Show TS delta (primary, ±20%) if available.
+		if len(ds.TSDelta) > 0 {
+			sb.WriteString("\n  TS delta (primary, per-operator Bayesian): ")
+			for _, name := range []string{"splice", "insert", "mutate_arg", "squash", "remove"} {
+				if delta, ok := ds.TSDelta[name]; ok {
+					pct := (delta - 1.0) * 100
+					sb.WriteString(fmt.Sprintf("%s=%+.0f%% ", name, pct))
+				}
+			}
+		}
+		// Show DE correction (secondary, ±5%) if available.
+		if len(ds.DECorrection) > 0 {
+			sb.WriteString("\n  DE correction (secondary, synergy search): ")
+			for _, name := range []string{"splice", "insert", "mutate_arg", "squash", "remove"} {
+				if corr, ok := ds.DECorrection[name]; ok {
+					pct := (corr - 1.0) * 100
+					sb.WriteString(fmt.Sprintf("%s=%+.1f%% ", name, pct))
+				}
+			}
+		}
+		sb.WriteString("\n  Combined delta from AI base: ")
 		for _, name := range []string{"splice", "insert", "mutate_arg", "squash", "remove"} {
 			if delta, ok := ds.DEDelta[name]; ok {
 				pct := (delta - 1.0) * 100

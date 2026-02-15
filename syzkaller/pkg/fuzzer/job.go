@@ -490,7 +490,7 @@ func (job *smashJob) run(fuzzer *Fuzzer) {
 				covGain = currentSignalLen - lastSignalLen
 				lastSignalLen = currentSignalLen
 			}
-			fuzzer.dezzer.RecordResult(op, covGain)
+			fuzzer.dezzer.RecordResult(op, covGain, SourceSmash)
 		}
 	}
 }
@@ -575,7 +575,7 @@ func (job *focusJob) run(fuzzer *Fuzzer) {
 		// PROBE: Phase 6 — feed result to DEzzer.
 		if op != "" {
 			if fuzzer.dezzer != nil {
-				fuzzer.dezzer.RecordResult(op, covGain)
+				fuzzer.dezzer.RecordResult(op, covGain, SourceFocus)
 			}
 			if covGain > 0 {
 				opCovGains[op] += covGain
