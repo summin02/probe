@@ -572,7 +572,7 @@ func (t *Triager) NextBatchSec() int {
 
 // Run starts the 1-hour batch loop. Call from a goroutine.
 func (t *Triager) Run(ctx context.Context) {
-	t.logf("Triage started (model=%v, provider=%v)", t.cfg.Model, detectProvider(t.cfg))
+	t.logf("[Triage] Started (model=%v, provider=%v)", t.cfg.Model, detectProvider(t.cfg))
 
 	// Run first batch after 2 minutes (let fuzzer warm up).
 	firstDelay := 2 * time.Minute
@@ -603,7 +603,7 @@ func (t *Triager) RunStepA(ctx context.Context) {
 	t.mu.Lock()
 	if t.running {
 		t.mu.Unlock()
-		t.logf("Already running, skipping manual Step A")
+		t.logf("[Step A] Already running, skipping manual trigger")
 		return
 	}
 	t.running = true
@@ -615,9 +615,9 @@ func (t *Triager) RunStepA(ctx context.Context) {
 		t.mu.Unlock()
 	}()
 
-	t.logf("Manual Step A triggered")
+	t.logf("[Step A] Manual analysis triggered")
 	t.stepA(ctx)
-	t.logf("Manual Step A finished")
+	t.logf("[Step A] Manual analysis finished")
 }
 
 // RunStepB runs strategy generation on demand (manual trigger).
@@ -625,7 +625,7 @@ func (t *Triager) RunStepB(ctx context.Context) {
 	t.mu.Lock()
 	if t.running {
 		t.mu.Unlock()
-		t.logf("Already running, skipping manual Step B")
+		t.logf("[Step B] Already running, skipping manual trigger")
 		return
 	}
 	t.running = true
@@ -637,9 +637,9 @@ func (t *Triager) RunStepB(ctx context.Context) {
 		t.mu.Unlock()
 	}()
 
-	t.logf("Manual Step B triggered")
+	t.logf("[Step B] Manual strategy triggered")
 	t.stepB(ctx)
-	t.logf("Manual Step B finished")
+	t.logf("[Step B] Manual strategy finished")
 }
 
 // RunStepEmbeddings runs crash embedding on demand (manual trigger).
@@ -647,7 +647,7 @@ func (t *Triager) RunStepEmbeddings(ctx context.Context) {
 	t.mu.Lock()
 	if t.running {
 		t.mu.Unlock()
-		t.logf("Already running, skipping manual Embeddings")
+		t.logf("[Embeddings] Already running, skipping manual trigger")
 		return
 	}
 	t.running = true
@@ -659,9 +659,9 @@ func (t *Triager) RunStepEmbeddings(ctx context.Context) {
 		t.mu.Unlock()
 	}()
 
-	t.logf("Manual Embeddings triggered")
+	t.logf("[Embeddings] Manual embedding triggered")
 	t.stepEmbeddings(ctx)
-	t.logf("Manual Embeddings finished")
+	t.logf("[Embeddings] Manual embedding finished")
 }
 
 func (t *Triager) runBatch(ctx context.Context) {
@@ -680,12 +680,12 @@ func (t *Triager) runBatch(ctx context.Context) {
 		t.mu.Unlock()
 	}()
 
-	t.logf("Batch cycle starting...")
+	t.logf("[Triage] Batch starting...")
 	t.stepA(ctx)
 	t.stepB(ctx)
 	t.stepC(ctx)
+	t.logf("[Triage] Batch complete")
 	t.stepEmbeddings(ctx)
-	t.logf("Batch cycle complete")
 }
 
 func (t *Triager) stepA(ctx context.Context) {
@@ -1323,6 +1323,14 @@ func (t *Triager) stepEmbeddings(ctx context.Context) {
 
 	// Persist embedding cost to disk.
 	saveCostTrackerFile(filepath.Join(t.workdir, "ai-emb-cost.json"), t.embeddingClient.cost)
+}
+
+// EmbeddingModel returns the embedding model name and provider.
+func (t *Triager) EmbeddingModel() (string, string) {
+	if t.embeddingClient == nil {
+		return "", ""
+	}
+	return t.embeddingClient.model, t.embeddingClient.provider
 }
 
 // EmbeddingCost returns embedding-specific cost snapshot (separate from LLM costs).

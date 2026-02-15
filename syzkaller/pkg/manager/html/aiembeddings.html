@@ -1,20 +1,13 @@
 {{/*
 Copyright 2024 syzkaller project authors. All rights reserved.
 Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
+PROBE: Phase 7e — GPTrace Embeddings page (format aligned with AI Triage).
 */}}
 
-{{/* PROBE: Phase 7e — GPTrace Embeddings Dashboard */}}
 <style>
 .tab-nav { display: flex; gap: 8px; margin-bottom: 16px; }
 .tab-nav a { padding: 6px 16px; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; color: #333; }
 .tab-nav a.active { background: #1a73e8; color: #fff; border-color: #1a73e8; }
-.summary-cards { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
-.card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; min-width: 180px; }
-.card h3 { margin: 0 0 8px 0; font-size: 14px; color: #666; }
-.card .value { font-size: 24px; font-weight: bold; }
-table.bordered { border-collapse: collapse; width: 100%; margin-bottom: 16px; }
-table.bordered th, table.bordered td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; }
-table.bordered th { background: #f5f5f5; }
 </style>
 
 <div class="tab-nav">
@@ -28,6 +21,14 @@ table.bordered th { background: #f5f5f5; }
 <p>Embedding-based dedup is not configured. Set <code>embedding_api_key</code> and <code>embedding_model</code> in the <code>ai_triage</code> config block.</p>
 {{else}}
 
+<table class="list_table">
+<caption>Embedding Status:</caption>
+<tr><td class="title">Model</td><td>{{.Model}} ({{.Provider}})</td></tr>
+<tr><td class="title">Embeddings</td><td>{{.TotalEmbeddings}} total, {{.TotalClusters}} clusters{{if .LargestCluster}}, largest cluster: {{.LargestCluster}}{{end}}</td></tr>
+{{if .LastEmbeddingTime}}<tr><td class="title">Last Embedding</td><td>{{.LastEmbeddingTime}}</td></tr>{{end}}
+</table>
+
+<br>
 <table class="list_table" style="width:auto">
 <caption>Actions:</caption>
 <tr>
@@ -38,80 +39,66 @@ table.bordered th { background: #f5f5f5; }
 	</td>
 </tr>
 </table>
+
 <br>
+<table class="list_table">
+<caption>GPT Embedding Usage:</caption>
+<tr><td class="title">Today</td><td>{{.TodayCalls}} calls, {{.TodayTokens}} tokens, ${{printf "%.4f" .TodayCostUSD}} (~{{.TodayCostKRW}} KRW)</td></tr>
+<tr><td class="title">Total</td><td>{{.TotalCalls}} calls, {{.TotalTokens}} tokens, ${{printf "%.4f" .TotalCostUSD}} (~{{.TotalCostKRW}} KRW)</td></tr>
+</table>
 
-<div class="summary-cards">
-  <div class="card">
-    <h3>Total Embeddings</h3>
-    <div class="value">{{.TotalEmbeddings}}</div>
-  </div>
-  <div class="card">
-    <h3>Clusters</h3>
-    <div class="value">{{.TotalClusters}}</div>
-  </div>
-  <div class="card">
-    <h3>Largest Cluster</h3>
-    <div class="value">{{.LargestCluster}}</div>
-  </div>
-  <div class="card">
-    <h3>GPT Cost (USD)</h3>
-    <div class="value">${{printf "%.4f" .EmbeddingCostUSD}}</div>
-  </div>
-  <div class="card">
-    <h3>GPT Cost (KRW)</h3>
-    <div class="value">{{.EmbeddingCostKRW}} won</div>
-  </div>
-  <div class="card">
-    <h3>Tokens Used</h3>
-    <div class="value">{{.EmbeddingTokens}}</div>
-  </div>
-  <div class="card">
-    <h3>API Calls</h3>
-    <div class="value">{{.EmbeddingCalls}}</div>
-  </div>
-  <div class="card">
-    <h3>Last Embedding</h3>
-    <div class="value" style="font-size:14px">{{.LastEmbeddingTime}}</div>
-  </div>
-</div>
-
+<br>
 <b>Console (Embeddings)</b>
-<div id="console" style="background:#1e1e1e; color:#d4d4d4; font-family:'Consolas','Courier New',monospace; font-size:12px; padding:10px; height:180px; overflow-y:auto; border:1px solid #555; border-radius:4px; margin-bottom:16px; white-space:pre-wrap;">Waiting for embedding activity...
+<div id="console" style="background:#1e1e1e; color:#d4d4d4; font-family:'Consolas','Courier New',monospace; font-size:12px; padding:10px; height:200px; overflow-y:auto; border:1px solid #555; border-radius:4px; margin-bottom:16px; white-space:pre-wrap;">Waiting for embedding activity...
 </div>
 
-<h2>Crash Clusters</h2>
 {{if .Clusters}}
-<table class="bordered">
-  <tr><th>Cluster</th><th>Representative Title</th><th>Members</th><th>Avg Similarity</th><th>Crash IDs</th></tr>
-  {{range .Clusters}}
-  <tr>
-    <td>#{{.ID}}</td>
-    <td>{{.Title}}</td>
-    <td>{{.Members}}</td>
-    <td>{{printf "%.3f" .AvgSim}}</td>
-    <td>{{range .CrashIDs}}{{.}} {{end}}</td>
-  </tr>
-  {{end}}
+<table class="list_table">
+<caption>Crash Clusters ({{.TotalClusters}}):</caption>
+<thead><tr>
+	<th>Cluster</th>
+	<th>Representative Title</th>
+	<th>Members</th>
+	<th>Avg Similarity</th>
+	<th>Crash IDs</th>
+</tr></thead>
+<tbody>
+{{range .Clusters}}
+<tr>
+	<td class="stat">#{{.ID}}</td>
+	<td class="title">{{.Title}}</td>
+	<td class="stat">{{.Members}}</td>
+	<td class="stat">{{printf "%.3f" .AvgSim}}</td>
+	<td style="font-size:11px; max-width:400px; word-wrap:break-word">{{range .CrashIDs}}{{.}} {{end}}</td>
+</tr>
+{{end}}
+</tbody>
 </table>
 {{else}}
-<p>No clusters yet. Embeddings will be processed during the next AI batch cycle.</p>
+<p>No clusters yet. Embeddings will be processed during the next batch cycle.</p>
 {{end}}
 
-<h2>Embedded Crashes</h2>
 {{if .CrashClusters}}
-<table class="bordered">
-  <tr><th>Crash ID</th><th>Title</th><th>Cluster</th><th>Tokens</th></tr>
-  {{range .CrashClusters}}
-  <tr>
-    <td>{{.CrashID}}</td>
-    <td>{{.Title}}</td>
-    <td>#{{.ClusterID}}</td>
-    <td>{{.Tokens}}</td>
-  </tr>
-  {{end}}
+<br>
+<table class="list_table">
+<caption>Embedded Crashes ({{.TotalEmbeddings}}):</caption>
+<thead><tr>
+	<th>Crash ID</th>
+	<th>Title</th>
+	<th>Cluster</th>
+	<th>Tokens</th>
+</tr></thead>
+<tbody>
+{{range .CrashClusters}}
+<tr>
+	<td style="font-size:11px">{{.CrashID}}</td>
+	<td class="title">{{.Title}}</td>
+	<td class="stat">#{{.ClusterID}}</td>
+	<td class="stat">{{.Tokens}}</td>
+</tr>
+{{end}}
+</tbody>
 </table>
-{{else}}
-<p>No embeddings yet.</p>
 {{end}}
 
 <script>
@@ -126,10 +113,18 @@ function triggerEmbed() {
 	fetch('/api/ai/embed', {method: 'POST'}).then(function() {
 		pollLog();
 	}).catch(function(err) {
-		alert('Error: ' + err);
+		appendLog('ERROR: ' + err);
 		btn.disabled = false;
 		btn.textContent = 'Embed Now';
 	});
+}
+
+function appendLog(msg) {
+	var c = document.getElementById('console');
+	if (!c) return;
+	var ts = new Date().toLocaleTimeString('en-GB', {hour12: false});
+	c.textContent += '[' + ts + '] ' + msg + '\n';
+	c.scrollTop = c.scrollHeight;
 }
 
 function pollLog() {
@@ -157,6 +152,7 @@ function pollLog() {
 			if (btn) { btn.disabled = false; btn.textContent = 'Embed Now'; }
 			if (wasRunning) {
 				wasRunning = false;
+				appendLog('Completed. Refreshing page...');
 				setTimeout(function() { location.reload(); }, 1500);
 				return;
 			}

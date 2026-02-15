@@ -1909,13 +1909,9 @@ func matchLogFilter(msg, filter string) bool {
 		return strings.Contains(msg, "[Step A]") ||
 			strings.Contains(msg, "[Step B]") ||
 			strings.Contains(msg, "[Step C]") ||
-			strings.Contains(msg, "Batch cycle") ||
-			strings.Contains(msg, "Triage started") ||
-			strings.Contains(msg, "batch cycle")
+			strings.Contains(msg, "[Triage]")
 	case "embeddings":
-		return strings.Contains(msg, "[Embeddings]") ||
-			strings.Contains(msg, "Batch cycle") ||
-			strings.Contains(msg, "batch cycle")
+		return strings.Contains(msg, "[Embeddings]")
 	default:
 		return true
 	}
@@ -2393,18 +2389,46 @@ func (serv *HTTPServer) httpAIEmbeddings(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Use type assertion to access Triager's embedding methods.
-	// Returns JSON-serializable data to avoid import cycle.
+	// Embedding model info.
+	type configProvider interface {
+		EmbeddingModel() (string, string)
+	}
+	if cp, ok := serv.Triager.(configProvider); ok {
+		data.Model, data.Provider = cp.EmbeddingModel()
+	}
+
+	// Embedding cost (today/total split).
+	type embCostProvider interface {
+		EmbeddingCostJSON() []byte
+	}
+	if ep, ok := serv.Triager.(embCostProvider); ok {
+		var embCost struct {
+			TotalCalls   int     `json:"total_calls"`
+			TotalInput   int     `json:"total_input_tokens"`
+			TotalCostUSD float64 `json:"total_cost_usd"`
+			TodayCalls   int     `json:"today_calls"`
+			TodayInput   int     `json:"today_input_tokens"`
+			TodayCostUSD float64 `json:"today_cost_usd"`
+		}
+		if embData := ep.EmbeddingCostJSON(); embData != nil {
+			json.Unmarshal(embData, &embCost)
+		}
+		data.TodayCalls = embCost.TodayCalls
+		data.TodayTokens = formatTokens(embCost.TodayInput)
+		data.TodayCostUSD = embCost.TodayCostUSD
+		data.TodayCostKRW = int(embCost.TodayCostUSD * 1450)
+		data.TotalCalls = embCost.TotalCalls
+		data.TotalTokens = formatTokens(embCost.TotalInput)
+		data.TotalCostUSD = embCost.TotalCostUSD
+		data.TotalCostKRW = int(embCost.TotalCostUSD * 1450)
+	}
+
+	// Embedding + cluster data.
 	type embeddingProvider interface {
 		EmbeddingsJSON() []byte
 	}
 	if ep, ok := serv.Triager.(embeddingProvider); ok {
 		var ed struct {
-			EmbeddingCost struct {
-				TotalCostUSD float64 `json:"total_cost_usd"`
-				TotalInput   int     `json:"total_input_tokens"`
-				TotalCalls   int     `json:"total_calls"`
-			} `json:"embedding_cost"`
 			Embeddings []struct {
 				CrashID   string    `json:"crash_id"`
 				Title     string    `json:"title"`
@@ -2423,10 +2447,6 @@ func (serv *HTTPServer) httpAIEmbeddings(w http.ResponseWriter, r *http.Request)
 			json.Unmarshal(raw, &ed)
 		}
 
-		data.EmbeddingCostUSD = ed.EmbeddingCost.TotalCostUSD
-		data.EmbeddingCostKRW = int(ed.EmbeddingCost.TotalCostUSD * 1450)
-		data.EmbeddingTokens = ed.EmbeddingCost.TotalInput
-		data.EmbeddingCalls = ed.EmbeddingCost.TotalCalls
 		data.TotalEmbeddings = len(ed.Embeddings)
 		data.TotalClusters = len(ed.Clusters)
 
@@ -2760,16 +2780,25 @@ type UIAIEmbeddingsData struct {
 	UIPageHeader
 	Disabled bool
 
+	// Status.
+	Model    string
+	Provider string
+
 	TotalEmbeddings   int
 	PendingCount      int
 	TotalClusters     int
 	LargestCluster    int
 	LastEmbeddingTime string
 
-	EmbeddingCostUSD float64
-	EmbeddingCostKRW int
-	EmbeddingTokens  int
-	EmbeddingCalls   int
+	// GPT Embedding cost — today/total split (matching Claude Usage in triage).
+	TodayCalls   int
+	TodayTokens  string
+	TodayCostUSD float64
+	TodayCostKRW int
+	TotalCalls   int
+	TotalTokens  string
+	TotalCostUSD float64
+	TotalCostKRW int
 
 	Clusters      []UIClusterRow
 	CrashClusters []UICrashClusterRow
