@@ -1,7 +1,7 @@
 {{/*
 Copyright 2024 syzkaller project authors. All rights reserved.
 Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
-PROBE: AI Analytics dashboard page (Phase 3).
+PROBE: AI Analytics dashboard page (Phase 3) — sub-tab layout by feature.
 */}}
 
 {{if .Disabled}}
@@ -9,32 +9,30 @@ PROBE: AI Analytics dashboard page (Phase 3).
 {{else}}
 
 <style>
-.tab-nav { display: flex; gap: 8px; margin-bottom: 16px; }
-.tab-nav a { padding: 6px 16px; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; color: #333; }
-.tab-nav a.active { background: #1a73e8; color: #fff; border-color: #1a73e8; }
-.analytics-cards {
-	display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px;
-}
-.analytics-card {
-	background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px;
-	padding: 16px 20px; min-width: 150px; flex: 1;
-}
-.analytics-card .label { font-size: 12px; color: #6c757d; text-transform: uppercase; }
-.analytics-card .value { font-size: 24px; font-weight: bold; margin-top: 4px; }
-.analytics-card .sub { font-size: 11px; color: #999; margin-top: 2px; }
+.analytics-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.analytics-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 18px 20px; transition: all var(--transition); position: relative; overflow: hidden; }
+.analytics-card:hover { border-color: var(--border-light); transform: translateY(-1px); }
+.analytics-card .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
+.analytics-card .value { font-size: 26px; font-weight: 700; margin-top: 6px; color: var(--text-primary); letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.analytics-card .sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
 .chart-row { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 20px; }
-.chart-box { flex: 1; min-width: 400px; border: 1px solid #ddd; border-radius: 6px; padding: 10px; background: #fff; }
-.chart-box-small { flex: 1; min-width: 300px; max-width: 400px; border: 1px solid #ddd; border-radius: 6px; padding: 10px; background: #fff; }
-.section-title { font-size: 18px; font-weight: bold; margin: 24px 0 12px 0; padding-bottom: 6px; border-bottom: 2px solid #4285f4; }
+.chart-box { flex: 1; min-width: 400px; border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 12px; background: var(--bg-card); }
+.chart-box-small { flex: 1; min-width: 300px; max-width: 400px; border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 12px; background: var(--bg-card); }
+.section-title { font-size: 14px; font-weight: 600; margin: 28px 0 14px 0; padding-bottom: 8px; border-bottom: 1px solid var(--border-light); color: var(--text-secondary); letter-spacing: 0.02em; }
 .section-title:first-of-type { margin-top: 12px; }
+.analytics-pane { display: none; }
+.analytics-pane.active { display: block; }
 </style>
 
-<div class="tab-nav">
-  <a href="/ai">Dashboard</a>
-  <a href="/ai/triage">AI Triage</a>
-  <a href="/ai/embeddings">Embeddings</a>
-  <a href="/ai/analytics" class="active">Analytics</a>
+<div class="tab-nav" id="analytics-tabs">
+  <a href="#" data-pane="dashboard" class="active">Dashboard</a>
+  <a href="#" data-pane="triage">AI Triage</a>
+  <a href="#" data-pane="embeddings">Embeddings</a>
+  <a href="#" data-pane="strategy">Strategy</a>
 </div>
+
+<!-- ===== DASHBOARD PANE ===== -->
+<div class="analytics-pane active" id="pane-dashboard">
 
 <div class="analytics-cards">
 	<div class="analytics-card">
@@ -58,7 +56,7 @@ PROBE: AI Analytics dashboard page (Phase 3).
 	</div>
 	<div class="analytics-card">
 		<div class="label">High Risk</div>
-		<div class="value" style="color:#c0392b">{{.HighRiskCount}}</div>
+		<div class="value" style="color:var(--danger)">{{.HighRiskCount}}</div>
 		<div class="sub">score &ge; 70</div>
 	</div>
 	<div class="analytics-card">
@@ -68,7 +66,7 @@ PROBE: AI Analytics dashboard page (Phase 3).
 	</div>
 </div>
 
-<div class="section-title">1. Cost Analytics</div>
+<div class="section-title">Cost Analytics</div>
 <div class="chart-row">
 	<div class="chart-box"><div id="chart_daily_cost" style="height:300px"></div></div>
 	<div class="chart-box-small"><div id="chart_cost_breakdown" style="height:300px"></div></div>
@@ -98,67 +96,7 @@ PROBE: AI Analytics dashboard page (Phase 3).
 </table>
 {{end}}
 
-<div class="section-title">2. Crash Analysis</div>
-<div class="chart-row">
-	<div class="chart-box"><div id="chart_score_dist" style="height:300px"></div></div>
-	<div class="chart-box-small"><div id="chart_exploit_class" style="height:300px"></div></div>
-</div>
-<table class="list_table" style="width:auto">
-<caption>Statistics:</caption>
-<tr><td class="title">Analyzed</td><td>{{.AnalyzedCount}} crashes</td></tr>
-<tr><td class="title">Avg Score</td><td>{{printf "%.1f" .AvgScore}}</td></tr>
-<tr><td class="title">Max Score</td><td>{{.MaxScore}}</td></tr>
-<tr><td class="title">High Risk (&ge;70)</td><td>{{.HighRiskCount}}</td></tr>
-</table>
-{{if .VulnTypes}}
-<br>
-<table class="list_table" style="width:auto">
-<caption>Vulnerability Types:</caption>
-<thead><tr><th>Type</th><th>Count</th><th>%</th></tr></thead>
-<tbody>
-{{range .VulnTypes}}
-<tr><td>{{.Type}}</td><td class="stat">{{.Count}}</td><td class="stat">{{printf "%.1f" .Pct}}%</td></tr>
-{{end}}
-</tbody>
-</table>
-{{end}}
-
-<div class="section-title">3. Strategy &amp; SyzGPT</div>
-<table class="list_table" style="width:auto">
-<caption>Strategy Summary:</caption>
-<tr><td class="title">Seeds Injected</td><td>{{.TotalSeedsInjected}}</td></tr>
-<tr><td class="title">Seeds Accepted</td><td>{{.TotalSeedsAccepted}}</td></tr>
-<tr><td class="title">Weights Applied</td><td>{{.TotalWeightsApplied}} / {{.TotalWeightsTotal}}</td></tr>
-<tr><td class="title">Focus Targets</td><td>{{.FocusTriggered}}</td></tr>
-</table>
-{{if .SyzGPTGenerated}}
-<br>
-<table class="list_table" style="width:auto">
-<caption>SyzGPT Performance:</caption>
-<tr><td class="title">Generated</td><td>{{.SyzGPTGenerated}} programs</td></tr>
-<tr><td class="title">Valid</td><td>{{.SyzGPTValid}} ({{.SyzGPTValidRate}}%)</td></tr>
-<tr><td class="title">Injected</td><td>{{.SyzGPTInjected}}</td></tr>
-</table>
-{{end}}
-{{if .StrategyRuns}}
-<br>
-<table class="list_table" style="width:auto">
-<caption>Recent Strategy Runs:</caption>
-<thead><tr><th>Time</th><th>Seeds</th><th>Weights</th><th>Summary</th></tr></thead>
-<tbody>
-{{range .StrategyRuns}}
-<tr>
-	<td class="time">{{formatTime .Time}}</td>
-	<td class="stat">{{.SeedsInjected}}&rarr;{{.SeedsAccepted}}</td>
-	<td class="stat">{{.WeightsApplied}}</td>
-	<td style="max-width:500px; word-wrap:break-word; white-space:pre-wrap">{{.Summary}}</td>
-</tr>
-{{end}}
-</tbody>
-</table>
-{{end}}
-
-<div class="section-title">4. API Performance</div>
+<div class="section-title">API Performance</div>
 <div class="chart-row">
 	<div class="chart-box"><div id="chart_calls_per_day" style="height:280px"></div></div>
 </div>
@@ -180,29 +118,163 @@ PROBE: AI Analytics dashboard page (Phase 3).
 <tr>
 	<td class="time">{{formatTime .Time}}</td>
 	<td>{{.Type}}</td>
-	<td style="color:red; max-width:600px; word-wrap:break-word">{{.Error}}</td>
+	<td style="color:var(--danger); max-width:600px; word-wrap:break-word">{{.Error}}</td>
 </tr>
 {{end}}
 </tbody>
 </table>
 {{end}}
 
-<div class="section-title">5. Crash Timeline</div>
+</div>
+
+<!-- ===== AI TRIAGE PANE ===== -->
+<div class="analytics-pane" id="pane-triage">
+
+<div class="analytics-cards">
+	<div class="analytics-card">
+		<div class="label">Analyzed</div>
+		<div class="value">{{.AnalyzedCount}}</div>
+		<div class="sub">crashes</div>
+	</div>
+	<div class="analytics-card">
+		<div class="label">Avg Score</div>
+		<div class="value">{{printf "%.1f" .AvgScore}}</div>
+	</div>
+	<div class="analytics-card">
+		<div class="label">Max Score</div>
+		<div class="value" style="color:var(--danger)">{{.MaxScore}}</div>
+	</div>
+	<div class="analytics-card">
+		<div class="label">High Risk</div>
+		<div class="value" style="color:var(--danger)">{{.HighRiskCount}}</div>
+		<div class="sub">score &ge; 70</div>
+	</div>
+</div>
+
+<div class="section-title">Score Distribution</div>
+<div class="chart-row">
+	<div class="chart-box"><div id="chart_score_dist" style="height:300px"></div></div>
+	<div class="chart-box-small"><div id="chart_exploit_class" style="height:300px"></div></div>
+</div>
+
+{{if .VulnTypes}}
+<table class="list_table" style="width:auto">
+<caption>Vulnerability Types:</caption>
+<thead><tr><th>Type</th><th>Count</th><th>%</th></tr></thead>
+<tbody>
+{{range .VulnTypes}}
+<tr><td>{{.Type}}</td><td class="stat">{{.Count}}</td><td class="stat">{{printf "%.1f" .Pct}}%</td></tr>
+{{end}}
+</tbody>
+</table>
+{{end}}
+
+<div class="section-title">Crash Timeline</div>
 <div class="chart-row">
 	<div class="chart-box"><div id="chart_crash_timeline" style="height:300px"></div></div>
 </div>
 
-<div class="section-title">6. Embedding Analytics</div>
+</div>
+
+<!-- ===== EMBEDDINGS PANE ===== -->
+<div class="analytics-pane" id="pane-embeddings">
+
+<div class="analytics-cards">
+	<div class="analytics-card">
+		<div class="label">Embedding Cost</div>
+		<div class="value">${{printf "%.4f" .EmbCostUSD}}</div>
+	</div>
+	<div class="analytics-card">
+		<div class="label">Clusters</div>
+		<div class="value">{{.EmbClusters}}</div>
+	</div>
+	<div class="analytics-card">
+		<div class="label">Dedup Ratio</div>
+		<div class="value">{{printf "%.1f" .DedupRatio}}%</div>
+	</div>
+	<div class="analytics-card">
+		<div class="label">Combined Cost</div>
+		<div class="value">${{printf "%.4f" .CombinedCostUSD}}</div>
+		<div class="sub">~{{.CombinedCostKRW}} KRW (LLM + Embedding)</div>
+	</div>
+</div>
+
+</div>
+
+<!-- ===== STRATEGY PANE ===== -->
+<div class="analytics-pane" id="pane-strategy">
+
+<div class="analytics-cards">
+	<div class="analytics-card">
+		<div class="label">Seeds Injected</div>
+		<div class="value">{{.TotalSeedsInjected}}</div>
+	</div>
+	<div class="analytics-card">
+		<div class="label">Seeds Accepted</div>
+		<div class="value" style="color:var(--success)">{{.TotalSeedsAccepted}}</div>
+	</div>
+	<div class="analytics-card">
+		<div class="label">Weights Applied</div>
+		<div class="value">{{.TotalWeightsApplied}}</div>
+		<div class="sub">/ {{.TotalWeightsTotal}} total</div>
+	</div>
+	<div class="analytics-card">
+		<div class="label">Focus Targets</div>
+		<div class="value">{{.FocusTriggered}}</div>
+	</div>
+</div>
+
+{{if .SyzGPTGenerated}}
 <table class="list_table" style="width:auto">
-<caption>Embedding Overview:</caption>
-<tr><td class="title">Embedding Cost</td><td>${{printf "%.4f" .EmbCostUSD}}</td></tr>
-<tr><td class="title">Clusters</td><td>{{.EmbClusters}}</td></tr>
-<tr><td class="title">Dedup Ratio</td><td>{{printf "%.1f" .DedupRatio}}%</td></tr>
-<tr><td class="title">Combined Cost (LLM + Embedding)</td><td>${{printf "%.4f" .CombinedCostUSD}} (~{{.CombinedCostKRW}} KRW)</td></tr>
+<caption>SyzGPT Performance:</caption>
+<tr><td class="title">Generated</td><td>{{.SyzGPTGenerated}} programs</td></tr>
+<tr><td class="title">Valid</td><td>{{.SyzGPTValid}} ({{.SyzGPTValidRate}}%)</td></tr>
+<tr><td class="title">Injected</td><td>{{.SyzGPTInjected}}</td></tr>
 </table>
+{{end}}
+
+{{if .StrategyRuns}}
+<br>
+<table class="list_table" style="width:auto">
+<caption>Recent Strategy Runs:</caption>
+<thead><tr><th>Time</th><th>Seeds</th><th>Weights</th><th>Summary</th></tr></thead>
+<tbody>
+{{range .StrategyRuns}}
+<tr>
+	<td class="time">{{formatTime .Time}}</td>
+	<td class="stat">{{.SeedsInjected}}&rarr;{{.SeedsAccepted}}</td>
+	<td class="stat">{{.WeightsApplied}}</td>
+	<td style="max-width:500px; word-wrap:break-word; white-space:pre-wrap">{{.Summary}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+{{end}}
+
+</div>
 
 <script src="https://www.gstatic.com/charts/loader.js"></script>
 <script>
+// Tab switching.
+(function() {
+	var tabs = document.querySelectorAll('#analytics-tabs a[data-pane]');
+	tabs.forEach(function(tab) {
+		tab.addEventListener('click', function(e) {
+			e.preventDefault();
+			tabs.forEach(function(t) { t.classList.remove('active'); });
+			tab.classList.add('active');
+			document.querySelectorAll('.analytics-pane').forEach(function(p) { p.classList.remove('active'); });
+			var pane = document.getElementById('pane-' + tab.getAttribute('data-pane'));
+			if (pane) pane.classList.add('active');
+			// Redraw charts for the active pane.
+			if (typeof google !== 'undefined' && google.visualization) drawAllCharts();
+			// Re-apply i18n.
+			var lang = localStorage.getItem('probe_lang');
+			if (lang && lang !== 'en' && typeof applyI18n === 'function') applyI18n(lang);
+		});
+	});
+})();
+
 google.charts.load('current', {packages: ['corechart']});
 google.charts.setOnLoadCallback(drawAllCharts);
 
@@ -217,6 +289,8 @@ function drawAllCharts() {
 }
 
 function drawDailyCost() {
+	var el = document.getElementById('chart_daily_cost');
+	if (!el || el.offsetParent === null) return;
 	var raw = {{.DailyCostJSON}};
 	if (!raw || raw.length === 0) return;
 	var dt = new google.visualization.DataTable();
@@ -224,78 +298,109 @@ function drawDailyCost() {
 	dt.addColumn('number', 'Crash');
 	dt.addColumn('number', 'Strategy');
 	dt.addRows(raw);
-	new google.visualization.ColumnChart(document.getElementById('chart_daily_cost')).draw(dt, {
+	new google.visualization.ColumnChart(el).draw(dt, {
 		title: 'Daily Cost (USD)', isStacked: true,
-		colors: ['#4285f4', '#fbbc04'],
-		legend: {position: 'top'},
+		colors: ['#6366f1', '#fbbf24'],
+		legend: {position: 'top', textStyle: {color: '#94a3b8'}},
 		chartArea: {width: '85%', height: '70%'},
-		vAxis: {format: '$#,##0.00'}
+		backgroundColor: '#162032',
+		titleTextStyle: {color: '#94a3b8'},
+		vAxis: {format: '$#,##0.00', textStyle: {color: '#64748b'}, gridlines: {color: 'rgba(255,255,255,0.05)'}, baselineColor: 'rgba(255,255,255,0.08)'},
+		hAxis: {textStyle: {color: '#64748b'}},
+		tooltip: {textStyle: {color: '#131c2e'}}
 	});
 }
 
 function drawCostBreakdown() {
+	var el = document.getElementById('chart_cost_breakdown');
+	if (!el || el.offsetParent === null) return;
 	var raw = {{.CostBreakdownJSON}};
 	if (!raw || raw.length === 0) return;
 	var dt = new google.visualization.DataTable();
 	dt.addColumn('string', 'Type');
 	dt.addColumn('number', 'Cost');
 	dt.addRows(raw);
-	new google.visualization.PieChart(document.getElementById('chart_cost_breakdown')).draw(dt, {
+	new google.visualization.PieChart(el).draw(dt, {
 		title: 'Cost Breakdown',
-		colors: ['#4285f4', '#fbbc04'],
+		colors: ['#6366f1', '#fbbf24'],
 		chartArea: {width: '90%', height: '75%'},
-		pieHole: 0.3
+		pieHole: 0.4,
+		backgroundColor: '#162032',
+		titleTextStyle: {color: '#94a3b8'},
+		legend: {textStyle: {color: '#94a3b8'}},
+		tooltip: {textStyle: {color: '#131c2e'}}
 	});
 }
 
 function drawCumulativeCost() {
+	var el = document.getElementById('chart_cumulative');
+	if (!el || el.offsetParent === null) return;
 	var raw = {{.CumulativeCostJSON}};
 	if (!raw || raw.length === 0) return;
 	var dt = new google.visualization.DataTable();
 	dt.addColumn('string', 'Date');
 	dt.addColumn('number', 'Cumulative');
 	dt.addRows(raw);
-	new google.visualization.LineChart(document.getElementById('chart_cumulative')).draw(dt, {
+	new google.visualization.LineChart(el).draw(dt, {
 		title: 'Cumulative Cost (USD)',
-		colors: ['#34a853'],
+		colors: ['#34d399'],
 		curveType: 'function',
 		legend: {position: 'none'},
 		chartArea: {width: '85%', height: '70%'},
-		vAxis: {format: '$#,##0.00'}
+		backgroundColor: '#162032',
+		titleTextStyle: {color: '#94a3b8'},
+		vAxis: {format: '$#,##0.00', textStyle: {color: '#64748b'}, gridlines: {color: 'rgba(255,255,255,0.05)'}, baselineColor: 'rgba(255,255,255,0.08)'},
+		hAxis: {textStyle: {color: '#64748b'}},
+		tooltip: {textStyle: {color: '#131c2e'}}
 	});
 }
 
 function drawScoreDist() {
+	var el = document.getElementById('chart_score_dist');
+	if (!el || el.offsetParent === null) return;
 	var raw = {{.ScoreDistJSON}};
 	if (!raw || raw.length === 0) return;
 	var dt = new google.visualization.DataTable();
 	dt.addColumn('string', 'Range');
 	dt.addColumn('number', 'Count');
 	dt.addRows(raw);
-	new google.visualization.ColumnChart(document.getElementById('chart_score_dist')).draw(dt, {
+	new google.visualization.ColumnChart(el).draw(dt, {
 		title: 'Score Distribution',
-		colors: ['#ea4335'],
+		colors: ['#f87171'],
 		legend: {position: 'none'},
 		chartArea: {width: '85%', height: '70%'},
-		vAxis: {minValue: 0}
+		backgroundColor: '#162032',
+		titleTextStyle: {color: '#94a3b8'},
+		vAxis: {minValue: 0, textStyle: {color: '#64748b'}, gridlines: {color: 'rgba(255,255,255,0.05)'}, baselineColor: 'rgba(255,255,255,0.08)'},
+		hAxis: {textStyle: {color: '#64748b'}},
+		tooltip: {textStyle: {color: '#131c2e'}}
 	});
 }
 
 function drawExploitClass() {
+	var el = document.getElementById('chart_exploit_class');
+	if (!el || el.offsetParent === null) return;
 	var raw = {{.ExploitClassJSON}};
 	if (!raw || raw.length === 0) return;
 	var dt = new google.visualization.DataTable();
 	dt.addColumn('string', 'Class');
 	dt.addColumn('number', 'Count');
 	dt.addRows(raw);
-	new google.visualization.PieChart(document.getElementById('chart_exploit_class')).draw(dt, {
+	new google.visualization.PieChart(el).draw(dt, {
 		title: 'Exploit Classes',
 		chartArea: {width: '90%', height: '75%'},
-		pieHole: 0.3
+		pieHole: 0.4,
+		backgroundColor: '#162032',
+		titleTextStyle: {color: '#94a3b8'},
+		legend: {textStyle: {color: '#94a3b8'}},
+		colors: ['#f87171', '#fbbf24', '#34d399', '#6366f1', '#22d3ee'],
+		tooltip: {textStyle: {color: '#131c2e'}}
 	});
 }
 
 function drawCallsPerDay() {
+	var el = document.getElementById('chart_calls_per_day');
+	if (!el || el.offsetParent === null) return;
 	var raw = {{.CallsPerDayJSON}};
 	if (!raw || raw.length === 0) return;
 	var dt = new google.visualization.DataTable();
@@ -303,16 +408,22 @@ function drawCallsPerDay() {
 	dt.addColumn('number', 'Crash');
 	dt.addColumn('number', 'Strategy');
 	dt.addRows(raw);
-	new google.visualization.ColumnChart(document.getElementById('chart_calls_per_day')).draw(dt, {
+	new google.visualization.ColumnChart(el).draw(dt, {
 		title: 'API Calls per Day', isStacked: true,
-		colors: ['#4285f4', '#fbbc04'],
-		legend: {position: 'top'},
+		colors: ['#6366f1', '#fbbf24'],
+		legend: {position: 'top', textStyle: {color: '#94a3b8'}},
 		chartArea: {width: '85%', height: '70%'},
-		vAxis: {minValue: 0}
+		backgroundColor: '#162032',
+		titleTextStyle: {color: '#94a3b8'},
+		vAxis: {minValue: 0, textStyle: {color: '#64748b'}, gridlines: {color: 'rgba(255,255,255,0.05)'}, baselineColor: 'rgba(255,255,255,0.08)'},
+		hAxis: {textStyle: {color: '#64748b'}},
+		tooltip: {textStyle: {color: '#131c2e'}}
 	});
 }
 
 function drawCrashTimeline() {
+	var el = document.getElementById('chart_crash_timeline');
+	if (!el || el.offsetParent === null) return;
 	var raw = {{.CrashTimelineJSON}};
 	if (!raw || raw.length === 0) return;
 	var dt = new google.visualization.DataTable();
@@ -321,12 +432,16 @@ function drawCrashTimeline() {
 	dt.addColumn('number', 'Medium (40-69)');
 	dt.addColumn('number', 'Low (<40)');
 	dt.addRows(raw);
-	new google.visualization.ColumnChart(document.getElementById('chart_crash_timeline')).draw(dt, {
+	new google.visualization.ColumnChart(el).draw(dt, {
 		title: 'Crash Discovery Timeline', isStacked: true,
-		colors: ['#ea4335', '#fbbc04', '#34a853'],
-		legend: {position: 'top'},
+		colors: ['#f87171', '#fbbf24', '#34d399'],
+		legend: {position: 'top', textStyle: {color: '#94a3b8'}},
 		chartArea: {width: '85%', height: '70%'},
-		vAxis: {minValue: 0}
+		backgroundColor: '#162032',
+		titleTextStyle: {color: '#94a3b8'},
+		vAxis: {minValue: 0, textStyle: {color: '#64748b'}, gridlines: {color: 'rgba(255,255,255,0.05)'}, baselineColor: 'rgba(255,255,255,0.08)'},
+		hAxis: {textStyle: {color: '#64748b'}},
+		tooltip: {textStyle: {color: '#131c2e'}}
 	});
 }
 </script>

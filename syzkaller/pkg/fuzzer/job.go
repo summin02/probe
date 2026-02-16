@@ -58,11 +58,15 @@ func mutateProgRequest(fuzzer *Fuzzer, rnd *rand.Rand) *queue.Request {
 		return nil
 	}
 	newP := p.Clone()
-	op := newP.Mutate(rnd,
+	// PROBE: C3 fix — apply DEzzer-optimized mutation weights (Phase 6/8b/8e).
+	// Without this, 95% of mutations use default weights, bypassing DEzzer optimization.
+	mutOpts := fuzzer.getAIMutateOpts("", classifyProgram(newP))
+	op := newP.MutateWithOpts(rnd,
 		prog.RecommendedCalls,
 		fuzzer.ChoiceTable(),
 		fuzzer.Config.NoMutateCalls,
 		fuzzer.Config.Corpus.Programs(),
+		mutOpts,
 	)
 	// PROBE: Phase 6 — track operator usage.
 	if op != "" {

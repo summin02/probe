@@ -32,6 +32,7 @@ type NgramClient struct {
 	addr    string
 	healthy bool
 	lastCheck time.Time
+	done    chan struct{}
 
 	// UCB-1 tracking: BiGRU vs ChoiceTable performance.
 	bigruWins   int64
@@ -65,6 +66,7 @@ func NewNgramClient(addr string, logf func(level int, msg string, args ...any)) 
 	c := &NgramClient{
 		addr: addr,
 		logf: logf,
+		done: make(chan struct{}),
 	}
 	go c.healthLoop()
 	return c
@@ -188,9 +190,22 @@ func (c *NgramClient) send(req ngramRequest) (*ngramResponse, error) {
 	return &resp, nil
 }
 
+// Stop terminates the healthLoop goroutine.
+func (c *NgramClient) Stop() {
+	select {
+	case <-c.done:
+	default:
+		close(c.done)
+	}
+}
+
 func (c *NgramClient) healthLoop() {
 	for {
-		time.Sleep(ngramHealthInterval)
+		select {
+		case <-c.done:
+			return
+		case <-time.After(ngramHealthInterval):
+		}
 		resp, err := c.send(ngramRequest{Method: "health"})
 		c.mu.Lock()
 		if err != nil {

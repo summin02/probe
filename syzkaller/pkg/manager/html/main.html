@@ -3,7 +3,9 @@ Copyright 2024 syzkaller project authors. All rights reserved.
 Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 */}}
 
-<table class="list_table">
+<div id="metric-cards" class="summary-cards" style="display:none"></div>
+
+<table class="list_table" id="stats-table">
 	<tbody>
 	{{range $s := $.Stats}}
 	<tr>
@@ -126,12 +128,90 @@ Use of this source code is governed by Apache 2 LICENSE that can be found in the
 {{template "diff_crashes" .InProgress}}
 {{end}}
 
-<b>Log:</b>
-<br>
-<textarea id="log_textarea" readonly rows="20" wrap=off>
-{{.Log}}
-</textarea>
+<div class="console-container">
+	<div class="console-header">CONSOLE</div>
+	<div class="console-body" id="log_textarea">{{.Log}}</div>
+</div>
+
 <script>
-	var textarea = document.getElementById("log_textarea");
-	textarea.scrollTop = textarea.scrollHeight;
+var HIGHLIGHT = {
+	'exec total': {color: ''},
+	'coverage': {color: 'var(--cyan)'},
+	'corpus': {color: ''},
+	'crash types': {color: 'var(--danger)'},
+	'uptime': {color: 'var(--success)'},
+	'candidates': {color: 'var(--warning)'}
+};
+
+function buildCards(table, cards) {
+	if (!table || !cards) return;
+	cards.innerHTML = '';
+	var rows = table.querySelectorAll('tbody tr');
+	var found = 0;
+	for (var i = 0; i < rows.length; i++) {
+		var cells = rows[i].querySelectorAll('td');
+		if (cells.length < 2) continue;
+		var name = cells[0].textContent.trim();
+		var meta = HIGHLIGHT[name];
+		if (!meta) continue;
+		found++;
+		var val = cells[1].textContent.trim();
+		var link = cells[1].querySelector('a');
+		var d = document.createElement('div');
+		d.className = 'card';
+		var valHtml = link ? '<a href="' + link.getAttribute('href') + '" style="color:inherit;text-decoration:none">' + val + '</a>' : val;
+		var colorStyle = meta.color ? ' style="color:' + meta.color + '"' : '';
+		d.innerHTML = '<h3>' + name + '</h3><div class="value"' + colorStyle + '>' + valHtml + '</div>';
+		cards.appendChild(d);
+		rows[i].style.display = 'none';
+	}
+	if (found > 0) cards.style.display = '';
+}
+
+// Initial render.
+(function() {
+	buildCards(document.getElementById('stats-table'), document.getElementById('metric-cards'));
+	var log = document.getElementById('log_textarea');
+	if (log) log.scrollTop = log.scrollHeight;
+})();
+
+// Live polling — refresh stats, crashes, and console every 5s.
+(function() {
+	var refreshing = false;
+	setInterval(function() {
+		if (refreshing) return;
+		refreshing = true;
+		fetch(window.location.href, {headers: {'X-Requested-With': 'XMLHttpRequest'}})
+		.then(function(r) { return r.text(); })
+		.then(function(html) {
+			var parser = new DOMParser();
+			var doc = parser.parseFromString(html, 'text/html');
+
+			// Update stats table.
+			var newTable = doc.getElementById('stats-table');
+			var curTable = document.getElementById('stats-table');
+			if (newTable && curTable) {
+				curTable.querySelector('tbody').innerHTML = newTable.querySelector('tbody').innerHTML;
+				// Show all rows first, then rebuild cards.
+				curTable.querySelectorAll('tbody tr').forEach(function(r) { r.style.display = ''; });
+				buildCards(curTable, document.getElementById('metric-cards'));
+			}
+
+			// Update console log.
+			var newLog = doc.getElementById('log_textarea');
+			var curLog = document.getElementById('log_textarea');
+			if (newLog && curLog) {
+				var wasAtBottom = curLog.scrollHeight - curLog.scrollTop - curLog.clientHeight < 40;
+				curLog.textContent = newLog.textContent;
+				if (wasAtBottom) curLog.scrollTop = curLog.scrollHeight;
+			}
+
+			// Re-apply i18n if active.
+			var lang = localStorage.getItem('probe_lang');
+			if (lang && lang !== 'en' && typeof applyI18n === 'function') applyI18n(lang);
+
+			refreshing = false;
+		}).catch(function() { refreshing = false; });
+	}, 1000);
+})();
 </script>

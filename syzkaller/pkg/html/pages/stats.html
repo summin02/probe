@@ -16,16 +16,26 @@ Use of this source code is governed by Apache 2 LICENSE that can be found in the
 			]), {
 				title: '{{$g.Title}}',
 				titlePosition: 'in',
+				titleTextStyle: {color: '#94a3b8', fontSize: 14, fontName: 'Inter, sans-serif'},
 				width: "95%",
 				height: "400",
 				chartArea: {width: '95%', height: '85%'},
-				legend: {position: 'in'},
+				legend: {position: 'in', textStyle: {color: '#94a3b8', fontName: 'Inter, sans-serif'}},
 				lineWidth: 2,
 				focusTarget: "category",
-				{{if $g.Stacked}} isStacked: true, {{end}}
-				vAxis: {minValue: 1, textPosition: 'in', gridlines: {multiple: 1}, minorGridlines: {multiple: 1}},
-				hAxis: {minValue: 1, textPosition: 'out', maxAlternation: 1, gridlines: {multiple: 1},
-					minorGridlines: {multiple: 1}},
+				backgroundColor: '#131c2e',
+				{{if $g.Stacked}} isStacked: true, areaOpacity: 0.15, {{end}}
+				colors: ['#6366f1', '#22d3ee', '#34d399', '#fbbf24', '#f87171', '#a78bfa', '#fb923c'],
+				vAxis: {minValue: 1, textPosition: 'in', textStyle: {color: '#64748b', fontName: 'Inter, sans-serif'},
+					gridlines: {multiple: 1, color: 'rgba(255,255,255,0.05)'},
+					minorGridlines: {multiple: 1, color: 'transparent'},
+					baselineColor: 'rgba(255,255,255,0.08)'},
+				hAxis: {minValue: 1, textPosition: 'out', maxAlternation: 1,
+					textStyle: {color: '#64748b', fontName: 'Inter, sans-serif'},
+					gridlines: {multiple: 1, color: 'rgba(255,255,255,0.05)'},
+					minorGridlines: {multiple: 1, color: 'transparent'},
+					baselineColor: 'rgba(255,255,255,0.08)'},
+				tooltip: {textStyle: {color: '#131c2e', fontName: 'Inter, sans-serif'}},
 			})
 		{{end}}
 
@@ -36,5 +46,5 @@ Use of this source code is governed by Apache 2 LICENSE that can be found in the
 </script>
 
 {{range $g := .}}
-	<div id="div_{{$g.ID}}"></div>
+	<div id="div_{{$g.ID}}" style="border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; margin-bottom: 16px; overflow: hidden;"></div>
 {{end}}

@@ -34,24 +34,39 @@ type EmbeddingClient struct {
 
 // NewEmbeddingClient creates a client for embedding API calls.
 // Returns nil if embedding is not configured (graceful degradation).
-func NewEmbeddingClient(cfg mgrconfig.AITriageConfig) *EmbeddingClient {
-	if cfg.EmbeddingAPIKey == "" {
+// Prefers top-level AIEmbeddingsConfig; falls back to legacy ai_triage.embedding_* fields.
+func NewEmbeddingClient(triageCfg mgrconfig.AITriageConfig, embCfg mgrconfig.AIEmbeddingsConfig) *EmbeddingClient {
+	// Prefer the dedicated ai_embeddings config; fall back to legacy ai_triage fields.
+	apiKey := embCfg.APIKey
+	if apiKey == "" {
+		apiKey = triageCfg.EmbeddingAPIKey
+	}
+	if apiKey == "" {
 		return nil
 	}
-	model := cfg.EmbeddingModel
+	model := embCfg.Model
+	if model == "" {
+		model = triageCfg.EmbeddingModel
+	}
 	if model == "" {
 		model = "text-embedding-3-small"
 	}
-	provider := cfg.EmbeddingProvider
+	provider := embCfg.Provider
+	if provider == "" {
+		provider = triageCfg.EmbeddingProvider
+	}
 	if provider == "" {
 		provider = "openai"
 	}
-	apiURL := cfg.EmbeddingAPIURL
+	apiURL := embCfg.APIURL
+	if apiURL == "" {
+		apiURL = triageCfg.EmbeddingAPIURL
+	}
 	if apiURL == "" {
 		apiURL = "https://api.openai.com/v1/embeddings"
 	}
 	return &EmbeddingClient{
-		apiKey:   cfg.EmbeddingAPIKey,
+		apiKey:   apiKey,
 		apiURL:   apiURL,
 		model:    model,
 		provider: provider,

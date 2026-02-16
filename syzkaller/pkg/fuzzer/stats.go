@@ -46,6 +46,18 @@ type Stats struct {
 	statEbpfCommitCreds     *stat.Val // PROBE: Phase 7d
 	statEbpfCrossCache      *stat.Val // PROBE: Phase 7c
 	statEbpfWriteToFreed    *stat.Val // PROBE: Phase 8a
+	statEbpfPageAllocs      *stat.Val // PROBE: Phase 9b
+	statEbpfPageReuses      *stat.Val // PROBE: Phase 9b
+	statEbpfPageUaf         *stat.Val // PROBE: Phase 9b
+	statEbpfFdInstalls      *stat.Val // PROBE: Phase 9d
+	statEbpfFdCloses        *stat.Val // PROBE: Phase 9d
+	statEbpfFdReuse         *stat.Val // PROBE: Phase 9d
+	statEbpfContextStacks   *stat.Val // PROBE: Phase 9c
+	statEbpfFrees           *stat.Val // PROBE: Phase 5 (H3 fix)
+	statEbpfRapidReuse      *stat.Val // PROBE: Phase 5 (H3 fix)
+	statEbpfPageFrees       *stat.Val // PROBE: Phase 9b (H3 fix)
+	statAnamnesisAssessed   *stat.Val // PROBE: Phase 9e
+	statAnamnesisFocused    *stat.Val // PROBE: Phase 9e
 	statFocusCovGain        *stat.Val // PROBE: Phase 6 — per-source coverage metrics
 	statSmashCovGain        *stat.Val // PROBE: Phase 6
 	statFuzzCovGain         *stat.Val // PROBE: Phase 6
@@ -130,6 +142,30 @@ func newStats(target *prog.Target) Stats {
 			stat.Graph("ebpf")),
 		statEbpfWriteToFreed: stat.New("ebpf write-to-freed", "Writes to freed slab objects via copy_from_user",
 			stat.Graph("ebpf")),
+		statEbpfPageAllocs: stat.New("ebpf page-allocs", "Page allocations observed by eBPF",
+			stat.Rate{}, stat.Graph("ebpf")),
+		statEbpfPageReuses: stat.New("ebpf page-reuse", "Page reuse events detected by eBPF",
+			stat.Graph("ebpf")),
+		statEbpfPageUaf: stat.New("ebpf page-uaf", "Page-level UAF patterns detected",
+			stat.Graph("ebpf")),
+		statEbpfFdInstalls: stat.New("ebpf fd-install", "FD installations observed by eBPF",
+			stat.Rate{}, stat.Graph("ebpf")),
+		statEbpfFdCloses: stat.New("ebpf fd-close", "FD closes observed by eBPF",
+			stat.Rate{}, stat.Graph("ebpf")),
+		statEbpfFdReuse: stat.New("ebpf fd-reuse", "FD reuse-after-close patterns detected",
+			stat.Graph("ebpf")),
+		statEbpfContextStacks: stat.New("ebpf ctx-stacks", "Unique context-sensitive stack traces observed",
+			stat.Rate{}, stat.Graph("ebpf")),
+		statEbpfFrees: stat.New("ebpf frees", "Kernel frees observed by eBPF",
+			stat.Rate{}, stat.Graph("ebpf")),
+		statEbpfRapidReuse: stat.New("ebpf rapid-reuse", "Rapid slab reuse events (alloc within 100us of free)",
+			stat.Rate{}, stat.Graph("ebpf")),
+		statEbpfPageFrees: stat.New("ebpf page-frees", "Page frees observed by eBPF",
+			stat.Rate{}, stat.Graph("ebpf")),
+		statAnamnesisAssessed: stat.New("anamnesis assessed", "Programs assessed by Anamnesis exploit scorer",
+			stat.Rate{}, stat.Graph("anamnesis")),
+		statAnamnesisFocused: stat.New("anamnesis focused", "Programs sent to Focus by Anamnesis (score>=60)",
+			stat.Graph("anamnesis")),
 		statFocusCovGain: stat.New("focus cov gain", "Coverage gains from focus mode executions",
 			stat.Rate{}, stat.StackedGraph("source cov")),
 		statSmashCovGain: stat.New("smash cov gain", "Coverage gains from smash job executions",

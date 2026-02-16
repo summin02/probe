@@ -4,22 +4,11 @@ Use of this source code is governed by Apache 2 LICENSE that can be found in the
 PROBE: AI Dashboard — summary overview with costs and full console.
 */}}
 
-<style>
-.tab-nav { display: flex; gap: 8px; margin-bottom: 16px; }
-.tab-nav a { padding: 6px 16px; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; color: #333; }
-.tab-nav a.active { background: #1a73e8; color: #fff; border-color: #1a73e8; }
-.summary-cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
-.card { border: 1px solid #ddd; border-radius: 8px; padding: 14px 18px; min-width: 150px; flex: 1; background: #f8f9fa; }
-.card h3 { margin: 0 0 6px 0; font-size: 12px; color: #666; text-transform: uppercase; }
-.card .value { font-size: 22px; font-weight: bold; }
-.card .sub { font-size: 11px; color: #999; margin-top: 2px; }
-</style>
-
 <div class="tab-nav">
   <a href="/ai" class="active">Dashboard</a>
   <a href="/ai/triage">AI Triage</a>
   <a href="/ai/embeddings">Embeddings</a>
-  <a href="/ai/analytics">Analytics</a>
+  <a href="/ai/specgen">Spec Gen</a>
 </div>
 
 {{if .Disabled}}
@@ -42,7 +31,7 @@ PROBE: AI Dashboard — summary overview with costs and full console.
   </div>
   <div class="card">
     <h3>High Risk</h3>
-    <div class="value" style="color:#c0392b">{{.HighRiskCount}}</div>
+    <div class="value" style="color:var(--danger)">{{.HighRiskCount}}</div>
     <div class="sub">score &ge; 70</div>
   </div>
   <div class="card">
@@ -92,9 +81,9 @@ PROBE: AI Dashboard — summary overview with costs and full console.
 </table>
 {{end}}
 
-<br>
-<b>Console (All)</b>
-<div id="console" style="background:#1e1e1e; color:#d4d4d4; font-family:'Consolas','Courier New',monospace; font-size:12px; padding:10px; height:250px; overflow-y:auto; border:1px solid #555; border-radius:4px; margin-bottom:16px; white-space:pre-wrap;">Waiting for AI activity...
+<div class="console-container" style="margin-top:24px">
+	<div class="console-header">CONSOLE</div>
+	<div class="console-body" id="console">Waiting for AI activity...</div>
 </div>
 
 <script>

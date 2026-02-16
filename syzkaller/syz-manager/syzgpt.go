@@ -237,7 +237,7 @@ func (mgr *Manager) aiValidateAndInject(progText string) (bool, error) {
 		return false, fmt.Errorf("fuzzer not ready")
 	}
 
-	// Strict deserialization to validate the program.
+	// Non-strict deserialization (tolerant of LLM output quirks).
 	p, err := mgr.target.Deserialize([]byte(progText), prog.NonStrict)
 	if err != nil {
 		return false, fmt.Errorf("invalid program: %w", err)

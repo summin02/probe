@@ -1,0 +1,163 @@
+{{/*
+Copyright 2024 syzkaller project authors. All rights reserved.
+Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
+PROBE: Phase 10 — AI Spec Generation dashboard.
+*/}}
+
+<div class="tab-nav">
+  <a href="/ai">Dashboard</a>
+  <a href="/ai/triage">AI Triage</a>
+  <a href="/ai/embeddings">Embeddings</a>
+  <a href="/ai/specgen" class="active">Spec Gen</a>
+</div>
+
+{{if .Disabled}}
+<p>AI Spec Generation is disabled. Configure <code>ai_specgen</code> in your config file with <code>model</code> and <code>api_key</code> to enable.</p>
+{{else}}
+
+<table class="list_table">
+<caption>AI Spec Gen Status:</caption>
+<tr><td class="title">LLM</td><td>{{.Model}} ({{.Provider}})</td></tr>
+{{if .APIURL}}<tr><td class="title">API URL</td><td>{{.APIURL}}</td></tr>{{end}}
+<tr><td class="title">Status</td><td><span id="specgen-status">{{.Status}}</span></td></tr>
+</table>
+
+<br>
+<div class="summary-cards">
+  <div class="card">
+    <h3>Total Specs</h3>
+    <div class="value">{{.TotalSpecs}}</div>
+    <div class="sub">generated</div>
+  </div>
+  <div class="card">
+    <h3>Validated</h3>
+    <div class="value" style="color:var(--success)">{{.ValidatedSpecs}}</div>
+    <div class="sub">passed compilation</div>
+  </div>
+  <div class="card">
+    <h3>Failed</h3>
+    <div class="value" style="color:var(--danger)">{{.FailedSpecs}}</div>
+    <div class="sub">compilation errors</div>
+  </div>
+  <div class="card">
+    <h3>Pending</h3>
+    <div class="value" style="color:var(--warning)">{{.PendingSpecs}}</div>
+    <div class="sub">awaiting validation</div>
+  </div>
+  <div class="card">
+    <h3>Coverage Gain</h3>
+    <div class="value">{{.CoverageGain}}</div>
+    <div class="sub">new PCs covered</div>
+  </div>
+</div>
+
+<table class="list_table">
+<caption>LLM Usage (Spec Generation):</caption>
+<tr><td class="title">Today</td><td>{{.TodayCalls}} calls, {{.TodayTokens}} tokens, ${{printf "%.2f" .TodayCostUSD}} (~{{.TodayCostKRW}} KRW)</td></tr>
+<tr><td class="title">Total</td><td>{{.TotalCalls}} calls, {{.TotalTokens}} tokens, ${{printf "%.2f" .TotalCostUSD}} (~{{.TotalCostKRW}} KRW)</td></tr>
+</table>
+
+<div class="console-container" style="margin-top:16px">
+<div class="console-header">SPEC GEN CONSOLE</div>
+<div class="console-body" id="console">Waiting for spec generation activity...
+</div>
+</div>
+
+{{if .Specs}}
+<table class="list_table">
+<caption>Generated Specs ({{.TotalSpecs}}):</caption>
+<thead><tr>
+	<th><a onclick="return sortTable(this, 'Driver', textSort)" href="#">Driver</a></th>
+	<th><a onclick="return sortTable(this, 'Path', textSort)" href="#">Path</a></th>
+	<th><a onclick="return sortTable(this, 'Status', textSort)" href="#">Status</a></th>
+	<th><a onclick="return sortTable(this, 'Coverage', numSort)" href="#">Coverage</a></th>
+	<th><a onclick="return sortTable(this, 'Syscalls', numSort)" href="#">Syscalls</a></th>
+	<th><a onclick="return sortTable(this, 'Time', textSort)" href="#">Created</a></th>
+</tr></thead>
+<tbody>
+{{range $s := .Specs}}
+<tr>
+	<td class="title">{{$s.Driver}}</td>
+	<td style="font-size:11px; max-width:300px; word-wrap:break-word">{{$s.Path}}</td>
+	<td class="stat" {{if $s.StatusColor}}style="background:{{$s.StatusColor}}"{{end}}>{{$s.Status}}</td>
+	<td class="stat">{{$s.Coverage}}</td>
+	<td class="stat">{{$s.Syscalls}}</td>
+	<td class="time">{{$s.CreatedAt}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+{{else}}
+<p>No specs generated yet. Spec generation will run automatically when new drivers are detected.</p>
+{{end}}
+
+<script>
+var lastLogLen = 0;
+var wasRunning = false;
+var pollInterval = null;
+
+function appendLog(msg) {
+	var c = document.getElementById('console');
+	if (!c) return;
+	var ts = new Date().toLocaleTimeString('en-GB', {hour12: false});
+	c.textContent += '[' + ts + '] ' + msg + '\n';
+	c.scrollTop = c.scrollHeight;
+}
+
+function pollLog() {
+	fetch('/api/ai/log?filter=specgen').then(function(r) { return r.json(); }).then(function(data) {
+		var c = document.getElementById('console');
+		if (!c) return;
+		var statusEl = document.getElementById('specgen-status');
+		if (statusEl) statusEl.textContent = data.running ? 'Running...' : 'Ready';
+		if (data.lines && data.lines.length > lastLogLen) {
+			for (var i = lastLogLen; i < data.lines.length; i++) {
+				var entry = data.lines[i];
+				var t = new Date(entry.time);
+				var ts = t.toLocaleTimeString('en-GB', {hour12: false});
+				c.textContent += '[' + ts + '] ' + entry.message + '\n';
+			}
+			lastLogLen = data.lines.length;
+			c.scrollTop = c.scrollHeight;
+		}
+		if (data.running) {
+			wasRunning = true;
+			if (pollInterval) clearTimeout(pollInterval);
+			pollInterval = setTimeout(pollLog, 1500);
+		} else {
+			if (wasRunning) {
+				wasRunning = false;
+				appendLog('Completed. Refreshing page...');
+				setTimeout(function() { location.reload(); }, 1500);
+				return;
+			}
+			if (pollInterval) clearTimeout(pollInterval);
+			pollInterval = setTimeout(pollLog, 5000);
+		}
+	}).catch(function() {
+		if (pollInterval) clearTimeout(pollInterval);
+		pollInterval = setTimeout(pollLog, 3000);
+	});
+}
+
+// Initial load.
+(function() {
+	fetch('/api/ai/log?filter=specgen').then(function(r) { return r.json(); }).then(function(data) {
+		var c = document.getElementById('console');
+		if (!c || !data.lines || data.lines.length === 0) return;
+		c.textContent = '';
+		for (var i = 0; i < data.lines.length; i++) {
+			var entry = data.lines[i];
+			var t = new Date(entry.time);
+			var ts = t.toLocaleTimeString('en-GB', {hour12: false});
+			c.textContent += '[' + ts + '] ' + entry.message + '\n';
+		}
+		lastLogLen = data.lines.length;
+		c.scrollTop = c.scrollHeight;
+		if (data.running) { wasRunning = true; }
+		pollLog();
+	});
+})();
+</script>
+
+{{end}}

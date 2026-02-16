@@ -89,6 +89,7 @@ func (serv *HTTPServer) Serve(ctx context.Context) error {
 	handle("/ai", serv.httpAI)                        // PROBE: AI dashboard
 	handle("/ai/analytics", serv.httpAIAnalytics)    // PROBE: AI analytics
 	handle("/ai/embeddings", serv.httpAIEmbeddings) // PROBE: AI embeddings dashboard
+	handle("/ai/specgen", serv.httpAISpecGen)        // PROBE: AI spec generation
 	handle("/ai/triage", serv.httpAITriage)          // PROBE: AI triage
 	handle("/ai/crash", serv.httpAICrash)             // PROBE: AI crash detail
 	handle("/api/ai/analyze", serv.httpAIAnalyze)     // PROBE: manual Step A
@@ -2516,6 +2517,106 @@ func (serv *HTTPServer) httpAIEmbeddings(w http.ResponseWriter, r *http.Request)
 	executeTemplate(w, aiEmbeddingsTemplate, &data)
 }
 
+// PROBE: Phase 10 — AI Spec Generation dashboard handler.
+func (serv *HTTPServer) httpAISpecGen(w http.ResponseWriter, r *http.Request) {
+	data := UIAISpecGenData{
+		UIPageHeader: serv.pageHeader(r, "AI Spec Gen"),
+	}
+
+	cfg := serv.Cfg.AISpecGen
+	if cfg.APIKey == "" {
+		data.Disabled = true
+		executeTemplate(w, aiSpecGenTemplate, &data)
+		return
+	}
+
+	// Config info.
+	data.Provider = cfg.Provider
+	data.Model = cfg.Model
+	data.APIURL = cfg.APIURL
+	data.Status = "Ready"
+
+	// PROBE: Read specgen cost data from workdir/specgen_cost.json.
+	costFile := filepath.Join(serv.Cfg.Workdir, "specgen_cost.json")
+	if costData, err := os.ReadFile(costFile); err == nil {
+		var cost struct {
+			TotalCalls        int     `json:"total_calls"`
+			TotalInputTokens  int     `json:"total_input_tokens"`
+			TotalOutputTokens int     `json:"total_output_tokens"`
+			TotalCostUSD      float64 `json:"total_cost_usd"`
+			Calls             []struct {
+				Time   string  `json:"time"`
+				Type   string  `json:"type"`
+				Model  string  `json:"model"`
+				CostUSD float64 `json:"cost_usd"`
+			} `json:"calls"`
+		}
+		if json.Unmarshal(costData, &cost) == nil {
+			data.TotalCalls = cost.TotalCalls
+			totalTokens := cost.TotalInputTokens + cost.TotalOutputTokens
+			data.TotalTokens = fmt.Sprintf("%dk", totalTokens/1000)
+			data.TotalCostUSD = cost.TotalCostUSD
+			data.TotalCostKRW = int(cost.TotalCostUSD * 1450)
+
+			// Today's stats.
+			today := time.Now().Format("2006-01-02")
+			for _, c := range cost.Calls {
+				if len(c.Time) >= 10 && c.Time[:10] == today {
+					data.TodayCalls++
+					data.TodayCostUSD += c.CostUSD
+				}
+			}
+			data.TodayTokens = fmt.Sprintf("%dk", 0) // Approximate from calls
+			data.TodayCostKRW = int(data.TodayCostUSD * 1450)
+		}
+	}
+
+	// PROBE: Read generated spec files from workdir/specgen/.
+	specDir := filepath.Join(serv.Cfg.Workdir, "specgen")
+	if entries, err := os.ReadDir(specDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			statusFile := filepath.Join(specDir, e.Name(), "status.json")
+			spec := UISpecEntry{Driver: e.Name()}
+			if sData, err := os.ReadFile(statusFile); err == nil {
+				var st struct {
+					Status   string `json:"status"`
+					Path     string `json:"path"`
+					Coverage int    `json:"coverage"`
+					Syscalls int    `json:"syscalls"`
+					Created  string `json:"created"`
+				}
+				if json.Unmarshal(sData, &st) == nil {
+					spec.Status = st.Status
+					spec.Path = st.Path
+					spec.Coverage = st.Coverage
+					spec.Syscalls = st.Syscalls
+					spec.CreatedAt = st.Created
+				}
+			} else {
+				spec.Status = "pending"
+			}
+			switch spec.Status {
+			case "validated":
+				spec.StatusColor = "#27ae60"
+				data.ValidatedSpecs++
+			case "failed":
+				spec.StatusColor = "#c0392b"
+				data.FailedSpecs++
+			default:
+				spec.StatusColor = "#f39c12"
+				data.PendingSpecs++
+			}
+			data.TotalSpecs++
+			data.Specs = append(data.Specs, spec)
+		}
+	}
+
+	executeTemplate(w, aiSpecGenTemplate, &data)
+}
+
 func (serv *HTTPServer) buildCostAnalytics(data *UIAIAnalyticsData, daily []dailyStat, history []historyEntry) {
 	// Daily cost bar chart data: [["Date", "Crash", "Strategy"], ...]
 	var dailyCostRows []string
@@ -2809,6 +2910,48 @@ func (serv *HTTPServer) buildAPIPerformance(data *UIAIAnalyticsData, daily []dai
 	}
 }
 
+// PROBE: Phase 10 — AI Spec Generation dashboard data.
+type UIAISpecGenData struct {
+	UIPageHeader
+	Disabled bool
+
+	// Config.
+	Provider string
+	Model    string
+	APIURL   string
+	Status   string
+
+	// Summary.
+	TotalSpecs     int
+	ValidatedSpecs int
+	FailedSpecs    int
+	PendingSpecs   int
+	CoverageGain   int
+
+	// Specs table.
+	Specs []UISpecEntry
+
+	// LLM Cost.
+	TodayCalls   int
+	TodayTokens  string
+	TodayCostUSD float64
+	TodayCostKRW int
+	TotalCalls   int
+	TotalTokens  string
+	TotalCostUSD float64
+	TotalCostKRW int
+}
+
+type UISpecEntry struct {
+	Driver      string
+	Path        string
+	Status      string // "validated", "failed", "pending"
+	StatusColor string
+	Coverage    int
+	Syscalls    int
+	CreatedAt   string
+}
+
 // PROBE: Phase 7e — Embeddings dashboard data.
 type UIAIEmbeddingsData struct {
 	UIPageHeader
@@ -2875,6 +3018,7 @@ var (
 	aiCrashTemplate       = createPage("aicrash", UIAICrashPage{})         // PROBE: AI crash detail
 	aiAnalyticsTemplate   = createPage("aianalytics", UIAIAnalyticsData{}) // PROBE: AI analytics
 	aiEmbeddingsTemplate  = createPage("aiembeddings", UIAIEmbeddingsData{}) // PROBE: AI embeddings
+	aiSpecGenTemplate     = createPage("aispecgen", UIAISpecGenData{})     // PROBE: AI spec generation
 )
 
 //go:embed html/*.html

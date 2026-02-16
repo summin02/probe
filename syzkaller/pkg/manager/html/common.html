@@ -7,6 +7,8 @@ Use of this source code is governed by Apache 2 LICENSE that can be found in the
 <html>
 <head>
 	<title>{{.PageTitle}}</title>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
 	{{HEAD}}
 </head>
 <body>
@@ -14,50 +16,128 @@ Use of this source code is governed by Apache 2 LICENSE that can be found in the
 		<table class="position_table">
 			<tr>
 				<td>
-					<h1><a href="/">syzkaller</a>{{if .Name}}: {{.Name}}{{end}}</h1>
+					<h1><a href="/">PROBE</a>{{if .Name}} <span style="color:var(--text-muted);font-weight:400;font-size:0.85rem;letter-spacing:0.02em">/ {{.Name}}</span>{{end}}</h1>
 				</td>
 				<td>
 					<form action="/action" method="post">
 						<input type="hidden" name="url" value="{{.CurrentURL}}" />
-						<button type="submit" name="toggle" value="expert" class="action_button{{if .ExpertMode}}_selected{{end}}" title="Toggle expert mode">
-							🧠
-						</button>
-						<button type="submit" name="toggle" value="pause" class="action_button{{if .Paused}}_selected{{end}}" title="Pause/unpause fuzzing">
-							{{if .Paused}}▶️{{else}}⏸️{{end}}
-						</button>
+						<button type="submit" name="toggle" value="expert" class="action_button{{if .ExpertMode}}_selected{{end}}" title="Toggle expert mode">E</button>
+						<button type="submit" name="toggle" value="pause" class="action_button{{if .Paused}}_selected{{end}}" title="Pause/unpause fuzzing">{{if .Paused}}&#9654;{{else}}&#10074;&#10074;{{end}}</button>
 					</form>
 				</td>
 				<td class="search">
+					<select id="lang-select" class="lang-select" onchange="switchLang(this.value)"><option value="en">EN</option><option value="ko">KR</option></select>
 					<a href="https://github.com/google/syzkaller/blob/master/docs/" target="_blank">docs</a> |
 					<a href="https://groups.google.com/forum/#!forum/syzkaller" target="_blank">mailing list</a> |
-					<a href="{{.GitRevisionLink}}" target="_blank">source {{.GitRevision}}</a>
+					<a href="{{.GitRevisionLink}}" target="_blank">{{.GitRevision}}</a>
 				</td>
 			</tr>
 		</table>
 		<div class="navigation">
 			<div class="navigation_tab{{if eq .URLPath "/stats"}}_selected{{end}}">
-				<a href='/stats'>📈 stats</a>
+				<a href='/stats'>Stats</a>
 			</div>
 			<div class="navigation_tab{{if eq .URLPath "/cover"}}_selected{{end}}">
-				<a href='/cover'>📃 coverage</a>
+				<a href='/cover'>Coverage</a>
 			</div>
 			<div class="navigation_tab{{if eq .URLPath "/syscalls"}}_selected{{end}}">
-				<a href='/syscalls'>🤖 syscalls</a>
+				<a href='/syscalls'>Syscalls</a>
 			</div>
 			<div class="navigation_tab{{if eq .URLPath "/corpus"}}_selected{{end}}">
-				<a href='/corpus'>🛒 corpus</a>
+				<a href='/corpus'>Corpus</a>
 			</div>
 			<div class="navigation_tab{{if eq .URLPath "/vms"}}_selected{{end}}">
-				<a href='/vms'>💻 VMs</a>
+				<a href='/vms'>VMs</a>
 			</div>
 			<div class="navigation_tab{{if eq .URLPath "/config"}}_selected{{end}}">
-				<a href='/config'>🔧 config</a>
+				<a href='/config'>Config</a>
 			</div>
-			<div class="navigation_tab{{if hasPrefix .URLPath "/ai"}}_selected{{end}}">
-				<a href='/ai'>🧪 AI</a>
+			<div class="navigation_tab{{if and (hasPrefix .URLPath "/ai") (ne .URLPath "/ai/analytics")}}_selected{{end}}">
+				<a href='/ai'>AI</a>
+			</div>
+			<div class="navigation_tab{{if eq .URLPath "/ai/analytics"}}_selected{{end}}">
+				<a href='/ai/analytics'>Analytics</a>
 			</div>
 		</div>
 	</header>
-	<br>
+	<div style="padding: 24px 28px; max-width: 1600px;">
 	%s
+	</div>
+<script>
+var PROBE_I18N={ko:{
+'Stats':'통계','Coverage':'커버리지','Syscalls':'시스콜','Corpus':'코퍼스',
+'VMs':'가상머신','Config':'설정','Analytics':'분석','Strategy':'전략',
+'Total Cost':'총 비용','Projected/Month':'월 예상','Success Rate':'성공률',
+'Cost Analytics':'비용 분석','API Performance':'API 성능',
+'Score Distribution':'점수 분포','Crash Timeline':'크래시 타임라인',
+'Embedding Cost':'임베딩 비용','Dedup Ratio':'중복 제거 비율','Combined Cost':'합산 비용',
+'Seeds Injected':'시드 투입','Seeds Accepted':'시드 수용','Weights Applied':'가중치 적용','Focus Targets':'포커스 대상',
+'docs':'문서','mailing list':'메일링 리스트',
+'Crashes:':'크래시:','Description':'설명','Rank':'순위','Count':'횟수',
+'First Time':'최초 발생','Last Time':'최근 발생','Report':'보고서','Repro Attempts':'재현 시도',
+'exec total':'총 실행','coverage':'커버리지','corpus':'코퍼스',
+'crash types':'크래시 유형','uptime':'가동 시간','candidates':'후보',
+'CONSOLE':'콘솔','TRIAGE CONSOLE':'분류 콘솔','EMBEDDINGS CONSOLE':'임베딩 콘솔',
+'SPEC GEN CONSOLE':'스펙 생성 콘솔',
+'Dashboard':'대시보드','AI Triage':'AI 분류','Embeddings':'임베딩','Spec Gen':'스펙 생성',
+'AI Status:':'AI 상태:','Actions:':'작업:','Model':'모델','LLM':'LLM',
+'Embedding':'임베딩','Status':'상태','Today':'오늘','Total':'합계',
+'Crash Analysis':'크래시 분석','Fuzzing Strategy':'퍼징 전략',
+'Claude (LLM) Usage:':'Claude (LLM) 사용량:','Claude (LLM) Cost:':'Claude (LLM) 비용:',
+'GPT Embedding Cost:':'GPT 임베딩 비용:','GPT Embedding Usage:':'GPT 임베딩 사용량:',
+'Combined Total:':'합산 비용:','Embedding Status:':'임베딩 상태:',
+'AI Spec Gen Status:':'AI 스펙 생성 상태:','LLM Usage (Spec Generation):':'LLM 사용량 (스펙 생성):',
+'Analyzed':'분석 완료','High Risk':'고위험','Pending':'대기 중','Clusters':'클러스터',
+'Total Specs':'총 스펙','Validated':'검증됨','Failed':'실패','Coverage Gain':'커버리지 증가',
+'Last Strategy':'최근 전략',
+'crashes':'크래시','generated':'생성됨','passed compilation':'컴파일 통과',
+'compilation errors':'컴파일 오류','awaiting validation':'검증 대기',
+'new PCs covered':'신규 PC 커버','awaiting analysis':'분석 대기',
+'Score':'점수','Class':'분류','Vuln':'취약점','Time':'시간','Title':'제목',
+'Driver':'드라이버','Path':'경로','Created':'생성일',
+'Cluster':'클러스터','Representative Title':'대표 제목','Members':'멤버',
+'Avg Similarity':'평균 유사도','Crash IDs':'크래시 ID','Crash ID':'크래시 ID',
+'Tokens':'토큰','Type':'유형','Cost':'비용','Result':'결과','Tokens (in/out)':'토큰 (입/출)',
+'Analyze Now':'지금 분석','Strategize Now':'전략 수립','Embed Now':'임베딩 실행',
+'Analyzing...':'분석 중...','Strategizing...':'전략 수립 중...','Embedding...':'임베딩 중...',
+'Summary':'요약','Syscall Weights':'시스콜 가중치','Seed Hints':'시드 힌트',
+'Mutation':'변이','Focus':'포커스',
+'SyzGPT Seed Generation:':'SyzGPT 시드 생성:',
+'Crash Embeddings':'크래시 임베딩','Dedup Ratio':'중복 제거 비율','Last Embedding':'최근 임베딩',
+'VM Info:':'VM 정보:','Name':'이름','State':'상태','Since':'경과','Machine Info':'머신 정보',
+'fuzzing':'퍼징','signal':'시그널','max signal':'최대 시그널','alive':'활성',
+'exec/sec':'실행/초','exec total':'총 실행','candidates':'후보',
+'corpus':'코퍼스','coverage':'커버리지','crash types':'크래시 유형',
+'uptime':'가동 시간','restarts':'재시작','running':'실행 중',
+'Toggle expert mode':'전문가 모드 전환','Pause/unpause fuzzing':'퍼징 일시정지/재개',
+'score \u2265 70':'점수 \u2265 70','Next batch:':'다음 배치:'
+}};
+function switchLang(l){localStorage.setItem('probe_lang',l);applyI18n(l);}
+function applyI18n(lang){
+var sel=document.getElementById('lang-select');if(sel)sel.value=lang;
+if(lang==='en'){document.querySelectorAll('[data-i18n-orig]').forEach(function(e){
+if(e.getAttribute('data-i18n-title-orig')){e.setAttribute('title',e.getAttribute('data-i18n-title-orig'));e.removeAttribute('data-i18n-title-orig');}
+e.textContent=e.getAttribute('data-i18n-orig');e.removeAttribute('data-i18n-orig');});return;}
+var d=PROBE_I18N[lang];if(!d)return;
+var sels=['.navigation_tab a','.navigation_tab_selected a','.tab-nav a',
+'.card h3','.card .sub','.console-header','table caption','table th a',
+'td.title','td.stat_name','button#analyzeBtn','button#stratBtn','button#embedBtn',
+'.analytics-card .label','.analytics-card .sub','.section-title'];
+sels.forEach(function(s){document.querySelectorAll(s).forEach(function(e){
+var o=e.getAttribute('data-i18n-orig');if(!o){o=e.textContent.trim();e.setAttribute('data-i18n-orig',o);}
+if(d[o])e.textContent=d[o];
+else{for(var k in d){if(o.indexOf(k)===0&&k.length>3){e.textContent=o.replace(k,d[k]);break;}}}
+});});
+document.querySelectorAll('.search a').forEach(function(e){
+var o=e.getAttribute('data-i18n-orig');if(!o){o=e.textContent.trim();e.setAttribute('data-i18n-orig',o);}
+if(d[o])e.textContent=d[o];});
+document.querySelectorAll('[title]').forEach(function(e){
+var o=e.getAttribute('data-i18n-title-orig');if(!o){o=e.getAttribute('title');e.setAttribute('data-i18n-title-orig',o);}
+if(d[o])e.setAttribute('title',d[o]);});
+}
+(function(){var l=localStorage.getItem('probe_lang')||'en';
+var sel=document.getElementById('lang-select');if(sel)sel.value=l;
+if(l!=='en'){if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',function(){applyI18n(l);});}else{applyI18n(l);}}
+})();
+</script>
 </body></html>

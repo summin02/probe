@@ -60,6 +60,7 @@ type Fuzzer struct {
 
 	// PROBE: Phase 8d — MOCK BiGRU client for context-aware insertCall.
 	ngramClient *NgramClient
+	anamnesis   *AnamnesisAssessor // Phase 9e: exploit assessment
 
 	// PROBE: Phase 8f — ablation cache for effective component inference.
 	ablationMu    sync.Mutex
@@ -93,6 +94,11 @@ func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 	}
 	f.dezzer = NewDEzzer(f.Logf)
 	f.ngramClient = NewNgramClient("", f.Logf) // Phase 8d: MOCK BiGRU client
+	f.anamnesis = NewAnamnesisAssessor(f.Logf)  // Phase 9e: exploit assessment
+	go func() {
+		<-ctx.Done()
+		f.ngramClient.Stop()
+	}()
 	f.execQueues = newExecQueues(f)
 	f.updateChoiceTable(nil)
 	go f.choiceTableUpdater()
@@ -199,6 +205,10 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 		}
 
 		if len(triage) != 0 {
+			// PROBE: H2 fix — track which mutation operators produce coverage gains.
+			if req.MutOp != "" {
+				fuzzer.statMutOpCovGain.Add(1)
+			}
 			// PROBE: Phase 6 — per-source coverage gain tracking.
 			switch req.Stat {
 			case fuzzer.statExecFocus:
@@ -245,6 +255,13 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 		}
 		if res.Info.EbpfReuseCount > 0 {
 			fuzzer.statEbpfReuses.Add(int(res.Info.EbpfReuseCount))
+		}
+		// H3 fix: track free and rapid-reuse counts.
+		if res.Info.EbpfFreeCount > 0 {
+			fuzzer.statEbpfFrees.Add(int(res.Info.EbpfFreeCount))
+		}
+		if res.Info.EbpfRapidReuseCount > 0 {
+			fuzzer.statEbpfRapidReuse.Add(int(res.Info.EbpfRapidReuseCount))
 		}
 		if res.Info.EbpfDoubleFreeCount > 0 {
 			fuzzer.statEbpfDoubleFree.Add(int(res.Info.EbpfDoubleFreeCount))
@@ -307,6 +324,76 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 				res.Info.EbpfWriteToFreedCount, res.Info.EbpfUafScore, req.Prog)
 			fuzzer.AddFocusCandidate(req.Prog,
 				fmt.Sprintf("PROBE:ebpf-write-to-freed:%s", req.Prog.String()), 1)
+		}
+		// Phase 9b: Page-level UAF / Dirty Pagetable detection.
+		if res.Info.EbpfPageAllocCount > 0 {
+			fuzzer.statEbpfPageAllocs.Add(int(res.Info.EbpfPageAllocCount))
+		}
+		if res.Info.EbpfPageReuseCount > 0 {
+			fuzzer.statEbpfPageReuses.Add(int(res.Info.EbpfPageReuseCount))
+		}
+		// H3 fix: track page free count.
+		if res.Info.EbpfPageFreeCount > 0 {
+			fuzzer.statEbpfPageFrees.Add(int(res.Info.EbpfPageFreeCount))
+		}
+		if res.Info.EbpfPageUafScore >= 60 && res.Status != queue.Hanged && ebpfCooldownOk {
+			fuzzer.statEbpfPageUaf.Add(1)
+			fuzzer.Logf(0, "PROBE: eBPF detected PAGE-LEVEL UAF pattern (page_score=%d, page_reuse=%d) in %s",
+				res.Info.EbpfPageUafScore, res.Info.EbpfPageReuseCount, req.Prog)
+			fuzzer.AddFocusCandidate(req.Prog,
+				fmt.Sprintf("PROBE:ebpf-page-uaf:%s", req.Prog.String()), 1)
+		}
+
+		// Phase 9d: FD lifecycle tracking.
+		if res.Info.EbpfFdInstallCount > 0 {
+			fuzzer.statEbpfFdInstalls.Add(int(res.Info.EbpfFdInstallCount))
+		}
+		if res.Info.EbpfFdCloseCount > 0 {
+			fuzzer.statEbpfFdCloses.Add(int(res.Info.EbpfFdCloseCount))
+		}
+		if res.Info.EbpfFdReuseScore >= 60 && res.Status != queue.Hanged && ebpfCooldownOk {
+			fuzzer.statEbpfFdReuse.Add(1)
+			fuzzer.Logf(0, "PROBE: eBPF detected FD REUSE pattern (fd_score=%d, fd_reuse=%d) in %s",
+				res.Info.EbpfFdReuseScore, res.Info.EbpfFdReuseCount, req.Prog)
+			fuzzer.AddFocusCandidate(req.Prog,
+				fmt.Sprintf("PROBE:ebpf-fd-reuse:%s", req.Prog.String()), 1)
+		}
+
+		// Phase 9c: Context-sensitive coverage diversity.
+		if res.Info.EbpfContextStacks > 0 {
+			fuzzer.statEbpfContextStacks.Add(int(res.Info.EbpfContextStacks))
+		}
+
+		// Phase 9 diagnostic: log raw page/FD/context metrics when non-trivial.
+		if res.Info.EbpfPageAllocCount > 10 || res.Info.EbpfFdInstallCount > 10 || res.Info.EbpfContextStacks > 0 {
+			fuzzer.Logf(2, "PROBE: Phase9 raw: page(a=%d f=%d r=%d s=%d) fd(i=%d c=%d r=%d s=%d) ctx=%d",
+				res.Info.EbpfPageAllocCount, res.Info.EbpfPageFreeCount,
+				res.Info.EbpfPageReuseCount, res.Info.EbpfPageUafScore,
+				res.Info.EbpfFdInstallCount, res.Info.EbpfFdCloseCount,
+				res.Info.EbpfFdReuseCount, res.Info.EbpfFdReuseScore,
+				res.Info.EbpfContextStacks)
+		}
+
+		// Phase 9e: Anamnesis composite exploit assessment.
+		// Evaluates all eBPF signals together for a holistic exploitability score.
+		// Quick-skip: only run when at least one eBPF anomaly signal is non-zero.
+		hasEbpfSignal := res.Info.EbpfReuseCount > 0 || res.Info.EbpfDoubleFreeCount > 0 ||
+			res.Info.EbpfCrossCacheCount > 0 || res.Info.EbpfWriteToFreedCount > 0 ||
+			res.Info.EbpfPrivEscCount > 0 || res.Info.EbpfPageReuseCount > 0 ||
+			res.Info.EbpfFdReuseCount > 0 || res.Info.EbpfPageUafScore >= 60 ||
+			res.Info.EbpfFdReuseScore >= 60
+		if fuzzer.anamnesis != nil && ebpfCooldownOk && hasEbpfSignal {
+			assessment := fuzzer.anamnesis.Assess(res.Info)
+			if assessment.Score >= 40 {
+				fuzzer.statAnamnesisAssessed.Add(1)
+			}
+			if assessment.ShouldFocus && res.Status != queue.Hanged {
+				fuzzer.statAnamnesisFocused.Add(1)
+				fuzzer.Logf(0, "PROBE: Anamnesis exploit assessment: score=%d class=%d tier=%d [%s] in %s",
+					assessment.Score, assessment.Class, assessment.FocusTier, assessment.Summary, req.Prog)
+				fuzzer.AddFocusCandidate(req.Prog,
+					fmt.Sprintf("PROBE:anamnesis:%s", req.Prog.String()), assessment.FocusTier)
+			}
 		}
 	}
 
@@ -595,8 +682,14 @@ func (fuzzer *Fuzzer) drainFocusPending() {
 
 	// Enforce cooldown between focus jobs (prevents back-to-back monopolization).
 	if time.Since(fuzzer.lastEbpfFocus) < 2*time.Minute {
-		// Clear stale pending to prevent unbounded growth.
-		fuzzer.focusPending = nil
+		// H6 fix: schedule a timer to retry after cooldown expires,
+		// preventing candidates from being orphaned in the pending queue.
+		if len(fuzzer.focusPending) > 0 {
+			remaining := 2*time.Minute - time.Since(fuzzer.lastEbpfFocus) + time.Second
+			time.AfterFunc(remaining, func() {
+				fuzzer.drainFocusPending()
+			})
+		}
 		return
 	}
 
@@ -705,6 +798,8 @@ func (fuzzer *Fuzzer) ApplyAIWeights(weights map[int]float64) {
 // Note: does NOT use progCandidate flag — AI injections are not counted in CandidatesToTriage()
 // to avoid interfering with corpus triage completion detection.
 func (fuzzer *Fuzzer) InjectProgram(p *prog.Prog) {
+	// H1 fix: track SyzGPT injected programs in stats.
+	fuzzer.statSyzGPTInjected.Add(1)
 	req := &queue.Request{
 		Prog:      p.Clone(),
 		ExecOpts:  setFlags(flatrpc.ExecFlagCollectSignal),
@@ -712,6 +807,12 @@ func (fuzzer *Fuzzer) InjectProgram(p *prog.Prog) {
 		Important: true,
 	}
 	fuzzer.enqueue(fuzzer.candidateQueue, req, ProgMinimized|ProgSmashed, 0)
+}
+
+// RecordSyzGPTGenerated increments the SyzGPT generated counter.
+// Called from AI triage when the LLM produces a program (even if invalid).
+func (fuzzer *Fuzzer) RecordSyzGPTGenerated() {
+	fuzzer.statSyzGPTGenerated.Add(1)
 }
 
 // PROBE: InjectSeed parses a syzkaller-format program text and injects it as a triage candidate.
@@ -986,13 +1087,24 @@ func (fuzzer *Fuzzer) computeAblation(exec queue.Executor, p *prog.Prog, rnd *ra
 // on essential calls to maximize crash reproduction/exploitation.
 func (fuzzer *Fuzzer) essentialMutate(p *prog.Prog, essential []bool, rnd *rand.Rand, opts prog.MutateOpts) (*prog.Prog, string) {
 	// Build noMutate map: block mutation of non-essential calls.
+	// H5 fix: only block a syscall ID if it does NOT appear at any essential position,
+	// otherwise we'd accidentally block essential calls sharing the same syscall ID.
 	noMutate := make(map[int]bool)
 	for k, v := range fuzzer.Config.NoMutateCalls {
 		noMutate[k] = v
 	}
+	essentialIDs := make(map[int]bool)
+	for i, e := range essential {
+		if e && i < len(p.Calls) {
+			essentialIDs[p.Calls[i].Meta.ID] = true
+		}
+	}
 	for i, e := range essential {
 		if !e && i < len(p.Calls) {
-			noMutate[p.Calls[i].Meta.ID] = true
+			sid := p.Calls[i].Meta.ID
+			if !essentialIDs[sid] {
+				noMutate[sid] = true
+			}
 		}
 	}
 

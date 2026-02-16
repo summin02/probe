@@ -228,6 +228,12 @@ type Config struct {
 	// PROBE: AI-guided fuzzing configuration.
 	AITriage AITriageConfig `json:"ai_triage,omitempty"`
 
+	// PROBE: AI embeddings configuration (Phase 7e). Takes precedence over ai_triage.embedding_* fields.
+	AIEmbeddings AIEmbeddingsConfig `json:"ai_embeddings,omitempty"`
+
+	// PROBE: Spec auto-generation LLM configuration (Phase 10).
+	AISpecGen AISpecGenConfig `json:"ai_specgen,omitempty"`
+
 	// Experimental options.
 	Experimental Experimental
 
@@ -290,11 +296,29 @@ type AITriageConfig struct {
 	APIKey   string `json:"api_key"`
 	APIURL   string `json:"api_url,omitempty"` // custom endpoint (default: provider's official URL)
 	MaxTier  int    `json:"max_tier,omitempty"`  // max crash tier to analyze (default: 2)
-	// Phase 7e: GPTrace embedding-based crash dedup.
-	EmbeddingProvider string `json:"embedding_provider,omitempty"` // "openai" (default)
-	EmbeddingModel    string `json:"embedding_model,omitempty"`    // "text-embedding-3-small"
-	EmbeddingAPIKey   string `json:"embedding_api_key,omitempty"`  // OpenAI API key
-	EmbeddingAPIURL   string `json:"embedding_api_url,omitempty"`  // custom endpoint
+	// Deprecated: use top-level ai_embeddings instead. Kept for backward compatibility.
+	EmbeddingProvider string `json:"embedding_provider,omitempty"`
+	EmbeddingModel    string `json:"embedding_model,omitempty"`
+	EmbeddingAPIKey   string `json:"embedding_api_key,omitempty"`
+	EmbeddingAPIURL   string `json:"embedding_api_url,omitempty"`
+}
+
+// PROBE: AIEmbeddingsConfig configures embedding model separately (Phase 7e).
+// If set, takes precedence over ai_triage.embedding_* fields.
+type AIEmbeddingsConfig struct {
+	Provider string `json:"provider,omitempty"` // "openai" (default)
+	Model    string `json:"model,omitempty"`    // "text-embedding-3-small"
+	APIKey   string `json:"api_key,omitempty"`
+	APIURL   string `json:"api_url,omitempty"`  // custom endpoint
+}
+
+// PROBE: AISpecGenConfig configures the LLM for spec auto-generation (Phase 10).
+// Vendor-agnostic: works with DeepSeek, OpenAI, or any OpenAI-compatible API.
+type AISpecGenConfig struct {
+	Provider string `json:"provider,omitempty"` // "deepseek", "openai", etc.
+	Model    string `json:"model,omitempty"`    // e.g. "deepseek-chat", "gpt-4o"
+	APIKey   string `json:"api_key"`
+	APIURL   string `json:"api_url,omitempty"`  // e.g. "https://api.deepseek.com"
 }
 
 type Subsystem struct {

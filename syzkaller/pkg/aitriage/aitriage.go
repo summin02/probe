@@ -224,6 +224,8 @@ var modelPricing = map[string][2]float64{
 	"claude-opus-4-5":            {5.0, 25.0},
 	"gpt-4o":                     {2.5, 10.0},
 	"gpt-4o-mini":                {0.15, 0.6},
+	"deepseek-chat":              {0.14, 0.28},
+	"deepseek-coder":             {0.14, 0.28},
 }
 
 func (ct *CostTracker) Record(call APICall, model string) {
@@ -370,6 +372,11 @@ type Triager struct {
 	// Track crash state for stepB skip logic.
 	lastCrashHash string
 
+	// Phase 10: Spec generation engine.
+	specGenClient LLMClient
+	specGenModel  string
+	lastSpecGen   time.Time
+
 	// Callbacks set by the manager for applying results.
 	OnTriageResult   func(crashID string, result *TriageResult)
 	OnStrategyResult func(result *StrategyResult)
@@ -380,6 +387,7 @@ type Triager struct {
 	GetLFSTargets          func(maxTargets int) []LFSTarget
 	ValidateAndInjectProg  func(progText string) (bool, error)
 	GetAvailableSyscalls   func() []string
+	OnSyzGPTGenerated      func() // H1 fix: called per LLM-generated program for stat tracking
 }
 
 // CrashForAnalysis packages crash data needed for AI analysis.
@@ -392,7 +400,7 @@ type CrashForAnalysis struct {
 	HasRepro    bool
 }
 
-func NewTriager(cfg mgrconfig.AITriageConfig, workdir string) (*Triager, error) {
+func NewTriager(cfg mgrconfig.AITriageConfig, embCfg mgrconfig.AIEmbeddingsConfig, workdir string) (*Triager, error) {
 	if cfg.APIKey == "" || cfg.Model == "" {
 		return nil, fmt.Errorf("ai_triage requires model and api_key")
 	}
@@ -404,7 +412,7 @@ func NewTriager(cfg mgrconfig.AITriageConfig, workdir string) (*Triager, error) 
 		cfg:             cfg,
 		client:          client,
 		batchClient:     NewBatchClient(cfg),
-		embeddingClient: NewEmbeddingClient(cfg),
+		embeddingClient: NewEmbeddingClient(cfg, embCfg),
 		workdir:         workdir,
 	}
 	// Phase 7e: Initialize cluster state if embedding is configured.
@@ -696,6 +704,7 @@ func (t *Triager) runBatch(ctx context.Context) {
 	t.stepA(ctx)
 	t.stepB(ctx)
 	t.stepC(ctx)
+	t.stepD(ctx) // Phase 10: AI spec generation.
 	t.logf("[Triage] Batch complete")
 	t.stepEmbeddings(ctx)
 }
@@ -1136,6 +1145,9 @@ func (t *Triager) stepC(ctx context.Context) {
 		call.OutputTokens = resp.OutputTokens
 		call.Success = true
 		generated++
+		if t.OnSyzGPTGenerated != nil {
+			t.OnSyzGPTGenerated()
+		}
 
 		progText, err := parseSyzGPTResponse(resp.Content)
 		if err != nil {

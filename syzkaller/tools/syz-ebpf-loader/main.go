@@ -94,6 +94,24 @@ func run(bpfObj string) error {
 		}
 	}
 
+	// 9b: Pin freed_pages map
+	if freedPagesMap := coll.Maps["freed_pages"]; freedPagesMap != nil {
+		pin := filepath.Join(pinDir, "freed_pages")
+		os.Remove(pin)
+		if err := freedPagesMap.Pin(pin); err != nil {
+			fmt.Fprintf(os.Stderr, "PROBE: warning: pin freed_pages map: %v\n", err)
+		}
+	}
+
+	// 9d: Pin freed_fds map
+	if freedFdsMap := coll.Maps["freed_fds"]; freedFdsMap != nil {
+		pin := filepath.Join(pinDir, "freed_fds")
+		os.Remove(pin)
+		if err := freedFdsMap.Pin(pin); err != nil {
+			fmt.Fprintf(os.Stderr, "PROBE: warning: pin freed_fds map: %v\n", err)
+		}
+	}
+
 	// Attach Phase 5 tracepoints
 	kfreeProg := coll.Programs["trace_kfree"]
 	if kfreeProg == nil {
@@ -184,6 +202,84 @@ func run(bpfObj string) error {
 				fmt.Fprintf(os.Stderr, "PROBE: warning: pin copy_from_user link: %v\n", err)
 			}
 			fmt.Fprintf(os.Stderr, "PROBE: kprobe/_copy_from_user attached (write-to-freed detection enabled)\n")
+		}
+	}
+
+	// Phase 9b: Attach tracepoint/kmem/mm_page_free (graceful skip on failure)
+	if prog := coll.Programs["trace_page_free"]; prog != nil {
+		tp, err := link.Tracepoint("kmem", "mm_page_free", prog, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "PROBE: warning: tracepoint mm_page_free failed: %v (page UAF detection disabled)\n", err)
+		} else {
+			pin := filepath.Join(pinDir, "link_page_free")
+			os.Remove(pin)
+			if err := tp.Pin(pin); err != nil {
+				fmt.Fprintf(os.Stderr, "PROBE: warning: pin page_free link: %v\n", err)
+			}
+			fmt.Fprintf(os.Stderr, "PROBE: tracepoint/kmem/mm_page_free attached (page UAF detection enabled)\n")
+		}
+	}
+
+	// Phase 9b: Attach tracepoint/kmem/mm_page_alloc (graceful skip on failure)
+	if prog := coll.Programs["trace_page_alloc"]; prog != nil {
+		tp, err := link.Tracepoint("kmem", "mm_page_alloc", prog, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "PROBE: warning: tracepoint mm_page_alloc failed: %v\n", err)
+		} else {
+			pin := filepath.Join(pinDir, "link_page_alloc")
+			os.Remove(pin)
+			if err := tp.Pin(pin); err != nil {
+				fmt.Fprintf(os.Stderr, "PROBE: warning: pin page_alloc link: %v\n", err)
+			}
+			fmt.Fprintf(os.Stderr, "PROBE: tracepoint/kmem/mm_page_alloc attached\n")
+		}
+	}
+
+	// 9c: Pin stack_traces map
+	if stackMap := coll.Maps["stack_traces"]; stackMap != nil {
+		pin := filepath.Join(pinDir, "stack_traces")
+		os.Remove(pin)
+		if err := stackMap.Pin(pin); err != nil {
+			fmt.Fprintf(os.Stderr, "PROBE: warning: pin stack_traces map: %v\n", err)
+		}
+	}
+
+	// 9c: Pin seen_stacks map
+	if seenMap := coll.Maps["seen_stacks"]; seenMap != nil {
+		pin := filepath.Join(pinDir, "seen_stacks")
+		os.Remove(pin)
+		if err := seenMap.Pin(pin); err != nil {
+			fmt.Fprintf(os.Stderr, "PROBE: warning: pin seen_stacks map: %v\n", err)
+		}
+	}
+
+	// Phase 9d: Attach kprobe/close_fd (graceful skip on failure)
+	if prog := coll.Programs["kprobe_close_fd"]; prog != nil {
+		kp, err := link.Kprobe("close_fd", prog, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "PROBE: warning: kprobe close_fd failed: %v (FD tracking disabled)\n", err)
+		} else {
+			pin := filepath.Join(pinDir, "link_close_fd")
+			os.Remove(pin)
+			if err := kp.Pin(pin); err != nil {
+				fmt.Fprintf(os.Stderr, "PROBE: warning: pin close_fd link: %v\n", err)
+			}
+			fmt.Fprintf(os.Stderr, "PROBE: kprobe/close_fd attached (FD close tracking enabled)\n")
+		}
+	}
+
+	// Phase 9d: Attach kprobe/fd_install (graceful skip on failure)
+	if prog := coll.Programs["kprobe_fd_install"]; prog != nil {
+		kp, err := link.Kprobe("fd_install", prog, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "PROBE: warning: kprobe fd_install failed: %v (FD reuse detection disabled)\n", err)
+		} else {
+			pin := filepath.Join(pinDir, "link_fd_install")
+			os.Remove(pin)
+			if err := kp.Pin(pin); err != nil {
+				fmt.Fprintf(os.Stderr, "PROBE: warning: pin fd_install link: %v\n", err)
+			}
+			fmt.Fprintf(os.Stderr, "PROBE: kprobe/fd_install attached (FD reuse detection enabled)\n")
 		}
 	}
 

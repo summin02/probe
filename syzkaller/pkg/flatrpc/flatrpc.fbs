@@ -265,6 +265,18 @@ table ProgInfoRaw {
 	ebpf_cross_cache_count	:uint32;
 	// Phase 8a:
 	ebpf_write_to_freed_count :uint32;
+	// Phase 9b: Page-level UAF / Dirty Pagetable
+	ebpf_page_alloc_count	:uint32;
+	ebpf_page_free_count	:uint32;
+	ebpf_page_reuse_count	:uint32;
+	ebpf_page_uaf_score	:uint32;
+	// Phase 9d: FD lifecycle tracking
+	ebpf_fd_install_count	:uint32;
+	ebpf_fd_close_count	:uint32;
+	ebpf_fd_reuse_count	:uint32;
+	ebpf_fd_reuse_score	:uint32;
+	// Phase 9c: Context-sensitive coverage
+	ebpf_context_stacks	:uint32;
 }
 
 // Result of executing a test program.

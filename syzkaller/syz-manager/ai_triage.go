@@ -25,7 +25,7 @@ func (mgr *Manager) initAITriage(ctx context.Context) {
 		return
 	}
 
-	triager, err := aitriage.NewTriager(cfg, mgr.cfg.Workdir)
+	triager, err := aitriage.NewTriager(cfg, mgr.cfg.AIEmbeddings, mgr.cfg.Workdir)
 	if err != nil {
 		log.Logf(0, "PROBE: AI triage init failed: %v", err)
 		return
@@ -41,6 +41,19 @@ func (mgr *Manager) initAITriage(ctx context.Context) {
 	triager.GetLFSTargets = mgr.aiGetLFSTargets
 	triager.ValidateAndInjectProg = mgr.aiValidateAndInject
 	triager.GetAvailableSyscalls = mgr.aiGetAvailableSyscalls
+	// H1 fix: wire SyzGPT stat tracking to fuzzer.
+	triager.OnSyzGPTGenerated = func() {
+		if f := mgr.fuzzer.Load(); f != nil {
+			f.RecordSyzGPTGenerated()
+		}
+	}
+
+	// Phase 10: Initialize spec generation if configured.
+	if mgr.cfg.AISpecGen.APIKey != "" {
+		if err := triager.InitSpecGen(mgr.cfg.AISpecGen); err != nil {
+			log.Logf(0, "PROBE: AI specgen init failed: %v", err)
+		}
+	}
 
 	mgr.triager = triager
 	mgr.http.Triager = triager

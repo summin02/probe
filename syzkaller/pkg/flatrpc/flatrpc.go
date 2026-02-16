@@ -3039,6 +3039,15 @@ type ProgInfoRawT struct {
 	EbpfPrivEscCount         uint32          `json:"ebpf_priv_esc_count"`
 	EbpfCrossCacheCount      uint32          `json:"ebpf_cross_cache_count"`
 	EbpfWriteToFreedCount    uint32          `json:"ebpf_write_to_freed_count"`
+	EbpfPageAllocCount       uint32          `json:"ebpf_page_alloc_count"`
+	EbpfPageFreeCount        uint32          `json:"ebpf_page_free_count"`
+	EbpfPageReuseCount       uint32          `json:"ebpf_page_reuse_count"`
+	EbpfPageUafScore         uint32          `json:"ebpf_page_uaf_score"`
+	EbpfFdInstallCount       uint32          `json:"ebpf_fd_install_count"`
+	EbpfFdCloseCount         uint32          `json:"ebpf_fd_close_count"`
+	EbpfFdReuseCount         uint32          `json:"ebpf_fd_reuse_count"`
+	EbpfFdReuseScore         uint32          `json:"ebpf_fd_reuse_score"`
+	EbpfContextStacks        uint32          `json:"ebpf_context_stacks"`
 }
 
 func (t *ProgInfoRawT) Pack(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
@@ -3090,6 +3099,15 @@ func (t *ProgInfoRawT) Pack(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	ProgInfoRawAddEbpfPrivEscCount(builder, t.EbpfPrivEscCount)
 	ProgInfoRawAddEbpfCrossCacheCount(builder, t.EbpfCrossCacheCount)
 	ProgInfoRawAddEbpfWriteToFreedCount(builder, t.EbpfWriteToFreedCount)
+	ProgInfoRawAddEbpfPageAllocCount(builder, t.EbpfPageAllocCount)
+	ProgInfoRawAddEbpfPageFreeCount(builder, t.EbpfPageFreeCount)
+	ProgInfoRawAddEbpfPageReuseCount(builder, t.EbpfPageReuseCount)
+	ProgInfoRawAddEbpfPageUafScore(builder, t.EbpfPageUafScore)
+	ProgInfoRawAddEbpfFdInstallCount(builder, t.EbpfFdInstallCount)
+	ProgInfoRawAddEbpfFdCloseCount(builder, t.EbpfFdCloseCount)
+	ProgInfoRawAddEbpfFdReuseCount(builder, t.EbpfFdReuseCount)
+	ProgInfoRawAddEbpfFdReuseScore(builder, t.EbpfFdReuseScore)
+	ProgInfoRawAddEbpfContextStacks(builder, t.EbpfContextStacks)
 	return ProgInfoRawEnd(builder)
 }
 
@@ -3123,6 +3141,15 @@ func (rcv *ProgInfoRaw) UnPackTo(t *ProgInfoRawT) {
 	t.EbpfPrivEscCount = rcv.EbpfPrivEscCount()
 	t.EbpfCrossCacheCount = rcv.EbpfCrossCacheCount()
 	t.EbpfWriteToFreedCount = rcv.EbpfWriteToFreedCount()
+	t.EbpfPageAllocCount = rcv.EbpfPageAllocCount()
+	t.EbpfPageFreeCount = rcv.EbpfPageFreeCount()
+	t.EbpfPageReuseCount = rcv.EbpfPageReuseCount()
+	t.EbpfPageUafScore = rcv.EbpfPageUafScore()
+	t.EbpfFdInstallCount = rcv.EbpfFdInstallCount()
+	t.EbpfFdCloseCount = rcv.EbpfFdCloseCount()
+	t.EbpfFdReuseCount = rcv.EbpfFdReuseCount()
+	t.EbpfFdReuseScore = rcv.EbpfFdReuseScore()
+	t.EbpfContextStacks = rcv.EbpfContextStacks()
 }
 
 func (rcv *ProgInfoRaw) UnPack() *ProgInfoRawT {
@@ -3390,8 +3417,116 @@ func (rcv *ProgInfoRaw) MutateEbpfWriteToFreedCount(n uint32) bool {
 	return rcv._tab.MutateUint32Slot(36, n)
 }
 
+
+func (rcv *ProgInfoRaw) EbpfPageAllocCount() uint32 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(38))
+	if o != 0 {
+		return rcv._tab.GetUint32(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ProgInfoRaw) MutateEbpfPageAllocCount(n uint32) bool {
+	return rcv._tab.MutateUint32Slot(38, n)
+}
+
+func (rcv *ProgInfoRaw) EbpfPageFreeCount() uint32 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(40))
+	if o != 0 {
+		return rcv._tab.GetUint32(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ProgInfoRaw) MutateEbpfPageFreeCount(n uint32) bool {
+	return rcv._tab.MutateUint32Slot(40, n)
+}
+
+func (rcv *ProgInfoRaw) EbpfPageReuseCount() uint32 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(42))
+	if o != 0 {
+		return rcv._tab.GetUint32(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ProgInfoRaw) MutateEbpfPageReuseCount(n uint32) bool {
+	return rcv._tab.MutateUint32Slot(42, n)
+}
+
+func (rcv *ProgInfoRaw) EbpfPageUafScore() uint32 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(44))
+	if o != 0 {
+		return rcv._tab.GetUint32(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ProgInfoRaw) MutateEbpfPageUafScore(n uint32) bool {
+	return rcv._tab.MutateUint32Slot(44, n)
+}
+
+func (rcv *ProgInfoRaw) EbpfFdInstallCount() uint32 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(46))
+	if o != 0 {
+		return rcv._tab.GetUint32(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ProgInfoRaw) MutateEbpfFdInstallCount(n uint32) bool {
+	return rcv._tab.MutateUint32Slot(46, n)
+}
+
+func (rcv *ProgInfoRaw) EbpfFdCloseCount() uint32 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(48))
+	if o != 0 {
+		return rcv._tab.GetUint32(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ProgInfoRaw) MutateEbpfFdCloseCount(n uint32) bool {
+	return rcv._tab.MutateUint32Slot(48, n)
+}
+
+func (rcv *ProgInfoRaw) EbpfFdReuseCount() uint32 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(50))
+	if o != 0 {
+		return rcv._tab.GetUint32(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ProgInfoRaw) MutateEbpfFdReuseCount(n uint32) bool {
+	return rcv._tab.MutateUint32Slot(50, n)
+}
+
+func (rcv *ProgInfoRaw) EbpfFdReuseScore() uint32 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(52))
+	if o != 0 {
+		return rcv._tab.GetUint32(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ProgInfoRaw) MutateEbpfFdReuseScore(n uint32) bool {
+	return rcv._tab.MutateUint32Slot(52, n)
+}
+
+func (rcv *ProgInfoRaw) EbpfContextStacks() uint32 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(54))
+	if o != 0 {
+		return rcv._tab.GetUint32(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ProgInfoRaw) MutateEbpfContextStacks(n uint32) bool {
+	return rcv._tab.MutateUint32Slot(54, n)
+}
 func ProgInfoRawStart(builder *flatbuffers.Builder) {
-	builder.StartObject(17)
+	builder.StartObject(26)
 }
 func ProgInfoRawAddCalls(builder *flatbuffers.Builder, calls flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(calls), 0)
@@ -3449,6 +3584,38 @@ func ProgInfoRawAddEbpfCrossCacheCount(builder *flatbuffers.Builder, ebpfCrossCa
 }
 func ProgInfoRawAddEbpfWriteToFreedCount(builder *flatbuffers.Builder, ebpfWriteToFreedCount uint32) {
 	builder.PrependUint32Slot(16, ebpfWriteToFreedCount, 0)
+}
+func ProgInfoRawAddEbpfPageAllocCount(builder *flatbuffers.Builder, ebpfPageAllocCount uint32) {
+	builder.PrependUint32Slot(17, ebpfPageAllocCount, 0)
+}
+func ProgInfoRawAddEbpfPageFreeCount(builder *flatbuffers.Builder, ebpfPageFreeCount uint32) {
+	builder.PrependUint32Slot(18, ebpfPageFreeCount, 0)
+}
+func ProgInfoRawAddEbpfPageReuseCount(builder *flatbuffers.Builder, ebpfPageReuseCount uint32) {
+	builder.PrependUint32Slot(19, ebpfPageReuseCount, 0)
+}
+func ProgInfoRawAddEbpfPageUafScore(builder *flatbuffers.Builder, ebpfPageUafScore uint32) {
+	builder.PrependUint32Slot(20, ebpfPageUafScore, 0)
+}
+
+func ProgInfoRawAddEbpfFdInstallCount(builder *flatbuffers.Builder, ebpfFdInstallCount uint32) {
+	builder.PrependUint32Slot(21, ebpfFdInstallCount, 0)
+}
+
+func ProgInfoRawAddEbpfFdCloseCount(builder *flatbuffers.Builder, ebpfFdCloseCount uint32) {
+	builder.PrependUint32Slot(22, ebpfFdCloseCount, 0)
+}
+
+func ProgInfoRawAddEbpfFdReuseCount(builder *flatbuffers.Builder, ebpfFdReuseCount uint32) {
+	builder.PrependUint32Slot(23, ebpfFdReuseCount, 0)
+}
+
+func ProgInfoRawAddEbpfFdReuseScore(builder *flatbuffers.Builder, ebpfFdReuseScore uint32) {
+	builder.PrependUint32Slot(24, ebpfFdReuseScore, 0)
+}
+
+func ProgInfoRawAddEbpfContextStacks(builder *flatbuffers.Builder, ebpfContextStacks uint32) {
+	builder.PrependUint32Slot(25, ebpfContextStacks, 0)
 }
 func ProgInfoRawEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

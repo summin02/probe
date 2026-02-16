@@ -170,6 +170,16 @@ struct alignas(8) OutputData {
 	std::atomic<uint32> ebpf_cross_cache;
 	// Phase 8a:
 	std::atomic<uint32> ebpf_write_to_freed;
+	// Phase 9b:
+	std::atomic<uint32> ebpf_page_alloc;
+	std::atomic<uint32> ebpf_page_free;
+	std::atomic<uint32> ebpf_page_reuse;
+	// Phase 9d: FD lifecycle
+	std::atomic<uint32> ebpf_fd_install;
+	std::atomic<uint32> ebpf_fd_close;
+	std::atomic<uint32> ebpf_fd_reuse;
+	// Phase 9c:
+	std::atomic<uint32> ebpf_context_stacks;
 
 	void Reset()
 	{
@@ -189,6 +199,13 @@ struct alignas(8) OutputData {
 		ebpf_priv_esc.store(0, std::memory_order_relaxed);
 		ebpf_cross_cache.store(0, std::memory_order_relaxed);
 		ebpf_write_to_freed.store(0, std::memory_order_relaxed);
+		ebpf_page_alloc.store(0, std::memory_order_relaxed);
+		ebpf_page_free.store(0, std::memory_order_relaxed);
+		ebpf_page_reuse.store(0, std::memory_order_relaxed);
+		ebpf_fd_install.store(0, std::memory_order_relaxed);
+		ebpf_fd_close.store(0, std::memory_order_relaxed);
+		ebpf_fd_reuse.store(0, std::memory_order_relaxed);
+		ebpf_context_stacks.store(0, std::memory_order_relaxed);
 	}
 };
 
@@ -1217,11 +1234,23 @@ void execute_one()
 		output_data->ebpf_priv_esc.store((uint32)metrics.priv_esc_count, std::memory_order_relaxed);
 		output_data->ebpf_cross_cache.store((uint32)metrics.cross_cache_count, std::memory_order_relaxed);
 		output_data->ebpf_write_to_freed.store((uint32)metrics.write_to_freed_count, std::memory_order_relaxed);
+		output_data->ebpf_page_alloc.store((uint32)metrics.page_alloc_count, std::memory_order_relaxed);
+		output_data->ebpf_page_free.store((uint32)metrics.page_free_count, std::memory_order_relaxed);
+		output_data->ebpf_page_reuse.store((uint32)metrics.page_reuse_count, std::memory_order_relaxed);
+		// Phase 9d: FD lifecycle
+		output_data->ebpf_fd_install.store((uint32)metrics.fd_install_count, std::memory_order_relaxed);
+		output_data->ebpf_fd_close.store((uint32)metrics.fd_close_count, std::memory_order_relaxed);
+		output_data->ebpf_fd_reuse.store((uint32)metrics.fd_reuse_count, std::memory_order_relaxed);
+		output_data->ebpf_context_stacks.store((uint32)metrics.context_unique_stacks, std::memory_order_relaxed);
 	}
 #endif
 
 #if SYZ_HAVE_CLOSE_FDS
 	close_fds();
+	// PROBE: close_fds() closes all fds >= 3, including BPF map fds.
+	// Invalidate so ebpf_init() re-opens them on next execution.
+	ebpf_metrics_fd = -1;
+	ebpf_freed_fd = -1;
 #endif
 
 	write_extra_output();
@@ -1547,6 +1576,9 @@ flatbuffers::span<uint8_t> finish_output(OutputData* output, int proc_id, uint64
 	uint32 ebpf_alloc = 0, ebpf_free = 0, ebpf_reuse = 0, ebpf_rapid = 0, ebpf_uaf_score = 0;
 	uint32 ebpf_double_free = 0, ebpf_size_mismatch = 0;
 	uint32 ebpf_commit_creds = 0, ebpf_priv_esc = 0, ebpf_cross_cache = 0, ebpf_write_to_freed = 0;
+	uint32 ebpf_page_alloc = 0, ebpf_page_free = 0, ebpf_page_reuse = 0, ebpf_page_uaf_score = 0;
+	uint32 ebpf_fd_install = 0, ebpf_fd_close = 0, ebpf_fd_reuse = 0, ebpf_fd_reuse_score = 0;
+	uint32 ebpf_context_stacks = 0;
 	uint64 ebpf_min_ns = 0;
 #if GOOS_linux
 	{
@@ -1561,6 +1593,14 @@ flatbuffers::span<uint8_t> finish_output(OutputData* output, int proc_id, uint64
 		ebpf_priv_esc = output->ebpf_priv_esc.load(std::memory_order_relaxed);
 		ebpf_cross_cache = output->ebpf_cross_cache.load(std::memory_order_relaxed);
 		ebpf_write_to_freed = output->ebpf_write_to_freed.load(std::memory_order_relaxed);
+		ebpf_page_alloc = output->ebpf_page_alloc.load(std::memory_order_relaxed);
+		ebpf_page_free = output->ebpf_page_free.load(std::memory_order_relaxed);
+		ebpf_page_reuse = output->ebpf_page_reuse.load(std::memory_order_relaxed);
+		// Phase 9d: FD lifecycle
+		ebpf_fd_install = output->ebpf_fd_install.load(std::memory_order_relaxed);
+		ebpf_fd_close = output->ebpf_fd_close.load(std::memory_order_relaxed);
+		ebpf_fd_reuse = output->ebpf_fd_reuse.load(std::memory_order_relaxed);
+		ebpf_context_stacks = output->ebpf_context_stacks.load(std::memory_order_relaxed);
 		// Compute UAF exploitability score (0-100)
 		// Note: cross-program contamination is prevented by epoch-based filtering
 		// in the BPF program (execution_start_ns), so no saturation guard needed.
@@ -1592,6 +1632,25 @@ flatbuffers::span<uint8_t> finish_output(OutputData* output, int proc_id, uint64
 		// commit_creds (no priv-esc) = slight bonus
 		if (ebpf_commit_creds > 0 && ebpf_priv_esc == 0)
 			ebpf_uaf_score += 5;
+		// Phase 9b: Page-level UAF / Dirty Pagetable scoring
+		if (ebpf_page_reuse > 0)
+			ebpf_page_uaf_score += 60;
+		if (ebpf_page_reuse > 5)
+			ebpf_page_uaf_score += 20;
+		if (ebpf_page_alloc > 0 && ebpf_page_free > 0 && ebpf_page_reuse == 0)
+			ebpf_page_uaf_score += 10; // activity without reuse = low signal
+		if (ebpf_page_uaf_score > 100)
+			ebpf_page_uaf_score = 100;
+
+		// Phase 9d: FD reuse scoring
+		if (ebpf_fd_reuse > 0)
+			ebpf_fd_reuse_score += 60;
+		if (ebpf_fd_reuse > 3)
+			ebpf_fd_reuse_score += 20;
+		if (ebpf_fd_close > ebpf_fd_install && ebpf_fd_close > 0)
+			ebpf_fd_reuse_score += 10;
+		if (ebpf_fd_reuse_score > 100)
+			ebpf_fd_reuse_score = 100;
 		if (ebpf_uaf_score > 100)
 			ebpf_uaf_score = 100;
 	}
@@ -1601,7 +1660,12 @@ flatbuffers::span<uint8_t> finish_output(OutputData* output, int proc_id, uint64
 							  ebpf_min_ns, ebpf_uaf_score,
 							  ebpf_double_free, ebpf_size_mismatch,
 							  ebpf_commit_creds, ebpf_priv_esc, ebpf_cross_cache,
-							  ebpf_write_to_freed);
+							  ebpf_write_to_freed,
+						  ebpf_page_alloc, ebpf_page_free, ebpf_page_reuse,
+						  ebpf_page_uaf_score,
+						  ebpf_fd_install, ebpf_fd_close, ebpf_fd_reuse,
+						  ebpf_fd_reuse_score,
+						  ebpf_context_stacks);
 	flatbuffers::Offset<flatbuffers::String> error_off = 0;
 	if (status == kFailStatus)
 		error_off = fbb.CreateString("process failed");

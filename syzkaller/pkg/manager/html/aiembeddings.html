@@ -4,17 +4,11 @@ Use of this source code is governed by Apache 2 LICENSE that can be found in the
 PROBE: Phase 7e — GPTrace Embeddings page (format aligned with AI Triage).
 */}}
 
-<style>
-.tab-nav { display: flex; gap: 8px; margin-bottom: 16px; }
-.tab-nav a { padding: 6px 16px; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; color: #333; }
-.tab-nav a.active { background: #1a73e8; color: #fff; border-color: #1a73e8; }
-</style>
-
 <div class="tab-nav">
   <a href="/ai">Dashboard</a>
   <a href="/ai/triage">AI Triage</a>
   <a href="/ai/embeddings" class="active">Embeddings</a>
-  <a href="/ai/analytics">Analytics</a>
+  <a href="/ai/specgen">Spec Gen</a>
 </div>
 
 {{if .Disabled}}
@@ -36,7 +30,7 @@ PROBE: Phase 7e — GPTrace Embeddings page (format aligned with AI Triage).
 	<td class="title" style="vertical-align:top">Crash Embeddings</td>
 	<td>
 		<button id="embedBtn" onclick="triggerEmbed()">Embed Now</button>
-		<span style="color:#888; font-size:12px; margin-left:6px">GPT embeds each crash report into a vector for semantic clustering</span>
+		<span style="color:var(--text-muted); font-size:12px; margin-left:6px">GPT embeds each crash report into a vector for semantic clustering</span>
 	</td>
 </tr>
 </table>
@@ -49,8 +43,10 @@ PROBE: Phase 7e — GPTrace Embeddings page (format aligned with AI Triage).
 </table>
 
 <br>
-<b>Console (Embeddings)</b>
-<div id="console" style="background:#1e1e1e; color:#d4d4d4; font-family:'Consolas','Courier New',monospace; font-size:12px; padding:10px; height:200px; overflow-y:auto; border:1px solid #555; border-radius:4px; margin-bottom:16px; white-space:pre-wrap;">Waiting for embedding activity...
+<div class="console-container" style="margin-top:20px">
+<div class="console-header">EMBEDDINGS CONSOLE</div>
+<div class="console-body" id="console" style="height:200px">Waiting for embedding activity...
+</div>
 </div>
 
 {{if .Clusters}}

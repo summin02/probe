@@ -394,6 +394,16 @@ struct probe_metrics {
 	uint64 cross_cache_count;    // 7c
 	// Phase 8a:
 	uint64 write_to_freed_count; // 8a
+	// Phase 9b:
+	uint64 page_alloc_count;      // 9b
+	uint64 page_free_count;       // 9b
+	uint64 page_reuse_count;      // 9b
+	// Phase 9d:
+	uint64 fd_install_count;      // 9d
+	uint64 fd_close_count;        // 9d
+	uint64 fd_reuse_count;        // 9d
+	// Phase 9c:
+	uint64 context_unique_stacks; // 9c
 };
 
 static int ebpf_metrics_fd = -1;

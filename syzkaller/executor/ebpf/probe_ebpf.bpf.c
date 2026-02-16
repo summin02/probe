@@ -50,6 +50,59 @@ struct {
 	__type(value, struct site_stats);
 } slab_sites SEC(".maps");
 
+// 9b: Recently freed pages: pfn → free_timestamp (ktime_ns).
+// LRU hash auto-evicts old entries, same pattern as freed_objects.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u64);
+	__type(value, __u64);
+} freed_pages SEC(".maps");
+
+// 9d: Recently closed FDs: (tgid<<32|fd) -> close_timestamp (ktime_ns).
+// LRU hash auto-evicts old entries, same pattern as freed_objects/freed_pages.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u64);
+	__type(value, __u64);
+} freed_fds SEC(".maps");
+
+// 9c: Kernel stack trace storage for context-sensitive coverage.
+struct {
+	__uint(type, BPF_MAP_TYPE_STACK_TRACE);
+	__uint(max_entries, 1024);
+	__type(key, __u32);
+	__type(value, __u64[PERF_MAX_STACK_DEPTH]);
+} stack_traces SEC(".maps");
+
+// 9c: Track unique (event_type, stack_id) pairs per execution.
+// Key = (event_type << 32) | stack_id, value = 1.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 2048);
+	__type(key, __u64);
+	__type(value, __u8);
+} seen_stacks SEC(".maps");
+
+// 9c: Helper — record a context-sensitive stack for an exploit-relevant event.
+// event_type: unique ID per detector (1=slab_reuse, 2=cross_cache, 3=write_freed,
+//             4=page_reuse, 5=fd_reuse, 6=double_free).
+static __always_inline void record_context_stack(
+	struct probe_metrics *m, void *ctx, __u32 event_type)
+{
+	long stack_id = bpf_get_stackid(ctx, &stack_traces, BPF_F_FAST_STACK_CMP);
+	if (stack_id < 0)
+		return;
+	__u64 key = ((__u64)event_type << 32) | (__u64)(__u32)stack_id;
+	__u8 *existing = bpf_map_lookup_elem(&seen_stacks, &key);
+	if (!existing) {
+		__u8 val = 1;
+		bpf_map_update_elem(&seen_stacks, &key, &val, BPF_NOEXIST);
+		__sync_fetch_and_add(&m->context_unique_stacks, 1);
+	}
+}
+
 // ============================================================
 // Phase 5: Tracepoint programs (stable ABI, no CO-RE needed)
 // ============================================================
@@ -74,8 +127,10 @@ int trace_kfree(struct trace_event_raw_kfree *ctx)
 
 	// Double-free: ptr already in freed_objects (freed without intervening alloc)
 	__u64 *existing = bpf_map_lookup_elem(&freed_objects, &ptr);
-	if (existing && m)
+	if (existing && m) {
 		__sync_fetch_and_add(&m->double_free_count, 1);
+		record_context_stack(m, ctx, 6); // 9c: double-free context
+	}
 
 	__u64 ts = bpf_ktime_get_ns();
 
@@ -151,6 +206,7 @@ int trace_kmalloc(struct trace_event_raw_kmalloc *ctx)
 	__u64 delay = now - *free_ts;
 
 	__sync_fetch_and_add(&m->reuse_count, 1);
+	record_context_stack(m, ctx, 1); // 9c: slab reuse context
 
 	// Rapid reuse: < 100 microseconds (100,000 ns)
 	if (delay < 100000)
@@ -249,8 +305,10 @@ int trace_cache_alloc(struct trace_event_raw_kmem_cache_alloc *ctx)
 	// This is a strong cross-cache indicator.
 	__u32 key = 0;
 	struct probe_metrics *m = bpf_map_lookup_elem(&metrics, &key);
-	if (m)
+	if (m) {
 		__sync_fetch_and_add(&m->cross_cache_count, 1);
+		record_context_stack(m, ctx, 2); // 9c: cross-cache context
+	}
 
 	bpf_map_delete_elem(&cache_freed, &ptr);
 	return 0;
@@ -306,6 +364,118 @@ int BPF_KPROBE(kprobe_copy_from_user, void *to, const void *from, unsigned long 
 		return 0;
 
 	__sync_fetch_and_add(&m->write_to_freed_count, 1);
+	record_context_stack(m, ctx, 3); // 9c: write-to-freed context
+	return 0;
+}
+
+// ============================================================
+// Phase 9b: Page-level UAF / Dirty Pagetable Detection
+// ============================================================
+
+// Track page frees via mm_page_free tracepoint.
+// The tracepoint provides pfn (page frame number) directly.
+SEC("tracepoint/kmem/mm_page_free")
+int trace_page_free(struct trace_event_raw_mm_page_free *ctx)
+{
+	__u64 pfn = (__u64)ctx->pfn;
+	if (pfn == 0)
+		return 0;
+
+	__u32 key = 0;
+	struct probe_metrics *m = bpf_map_lookup_elem(&metrics, &key);
+	if (!m || m->execution_start_ns == 0)
+		return 0;
+
+	__sync_fetch_and_add(&m->page_free_count, 1);
+
+	__u64 ts = bpf_ktime_get_ns();
+	bpf_map_update_elem(&freed_pages, &pfn, &ts, BPF_ANY);
+	return 0;
+}
+
+// Track page allocations via mm_page_alloc tracepoint.
+// Detect rapid page reuse (dirty pagetable indicator).
+SEC("tracepoint/kmem/mm_page_alloc")
+int trace_page_alloc(struct trace_event_raw_mm_page_alloc *ctx)
+{
+	__u64 pfn = (__u64)ctx->pfn;
+	if (pfn == 0)
+		return 0;
+
+	__u32 key = 0;
+	struct probe_metrics *m = bpf_map_lookup_elem(&metrics, &key);
+	if (!m || m->execution_start_ns == 0)
+		return 0;
+
+	__sync_fetch_and_add(&m->page_alloc_count, 1);
+
+	// Check if this page was recently freed (page reuse)
+	__u64 *free_ts = bpf_map_lookup_elem(&freed_pages, &pfn);
+	if (!free_ts)
+		return 0;
+
+	// Epoch filter: ignore frees from previous executions
+	if (*free_ts < m->execution_start_ns) {
+		bpf_map_delete_elem(&freed_pages, &pfn);
+		return 0;
+	}
+
+	__sync_fetch_and_add(&m->page_reuse_count, 1);
+	record_context_stack(m, ctx, 4); // 9c: page reuse context
+	bpf_map_delete_elem(&freed_pages, &pfn);
+	return 0;
+}
+
+// ============================================================
+// Phase 9d: FD Lifecycle Tracking (CO-RE kprobes)
+// ============================================================
+
+// Track FD closes. Record (tgid|fd) -> timestamp in freed_fds map.
+SEC("kprobe/close_fd")
+int BPF_KPROBE(kprobe_close_fd, unsigned int fd)
+{
+	__u32 key = 0;
+	struct probe_metrics *m = bpf_map_lookup_elem(&metrics, &key);
+	if (!m || m->execution_start_ns == 0)
+		return 0;
+
+	__sync_fetch_and_add(&m->fd_close_count, 1);
+
+	__u64 tgid = bpf_get_current_pid_tgid() >> 32;
+	__u64 composite_key = (tgid << 32) | (__u64)fd;
+	__u64 ts = bpf_ktime_get_ns();
+	bpf_map_update_elem(&freed_fds, &composite_key, &ts, BPF_ANY);
+	return 0;
+}
+
+// Track FD installations. Detect FD reuse when a recently-closed FD number
+// is assigned again (potential use-after-close / FD hijacking).
+SEC("kprobe/fd_install")
+int BPF_KPROBE(kprobe_fd_install, unsigned int fd, struct file *file)
+{
+	__u32 key = 0;
+	struct probe_metrics *m = bpf_map_lookup_elem(&metrics, &key);
+	if (!m || m->execution_start_ns == 0)
+		return 0;
+
+	__sync_fetch_and_add(&m->fd_install_count, 1);
+
+	// Check if this FD number was recently closed (FD reuse)
+	__u64 tgid = bpf_get_current_pid_tgid() >> 32;
+	__u64 composite_key = (tgid << 32) | (__u64)fd;
+	__u64 *close_ts = bpf_map_lookup_elem(&freed_fds, &composite_key);
+	if (!close_ts)
+		return 0;
+
+	// Epoch filter: ignore closes from previous executions
+	if (*close_ts < m->execution_start_ns) {
+		bpf_map_delete_elem(&freed_fds, &composite_key);
+		return 0;
+	}
+
+	__sync_fetch_and_add(&m->fd_reuse_count, 1);
+	record_context_stack(m, ctx, 5); // 9c: FD reuse context
+	bpf_map_delete_elem(&freed_fds, &composite_key);
 	return 0;
 }
 

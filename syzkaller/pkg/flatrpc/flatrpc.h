@@ -2354,6 +2354,15 @@ struct ProgInfoRawT : public ::flatbuffers::NativeTable {
   uint32_t ebpf_priv_esc_count = 0;
   uint32_t ebpf_cross_cache_count = 0;
   uint32_t ebpf_write_to_freed_count = 0;
+  uint32_t ebpf_page_alloc_count = 0;
+  uint32_t ebpf_page_free_count = 0;
+  uint32_t ebpf_page_reuse_count = 0;
+  uint32_t ebpf_page_uaf_score = 0;
+  uint32_t ebpf_fd_install_count = 0;
+  uint32_t ebpf_fd_close_count = 0;
+  uint32_t ebpf_fd_reuse_count = 0;
+  uint32_t ebpf_fd_reuse_score = 0;
+  uint32_t ebpf_context_stacks = 0;
   ProgInfoRawT() = default;
   ProgInfoRawT(const ProgInfoRawT &o);
   ProgInfoRawT(ProgInfoRawT&&) FLATBUFFERS_NOEXCEPT = default;
@@ -2380,7 +2389,16 @@ struct ProgInfoRaw FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
     VT_EBPF_COMMIT_CREDS_COUNT = 30,
     VT_EBPF_PRIV_ESC_COUNT = 32,
     VT_EBPF_CROSS_CACHE_COUNT = 34,
-    VT_EBPF_WRITE_TO_FREED_COUNT = 36
+    VT_EBPF_WRITE_TO_FREED_COUNT = 36,
+    VT_EBPF_PAGE_ALLOC_COUNT = 38,
+    VT_EBPF_PAGE_FREE_COUNT = 40,
+    VT_EBPF_PAGE_REUSE_COUNT = 42,
+    VT_EBPF_PAGE_UAF_SCORE = 44,
+    VT_EBPF_FD_INSTALL_COUNT = 46,
+    VT_EBPF_FD_CLOSE_COUNT = 48,
+    VT_EBPF_FD_REUSE_COUNT = 50,
+    VT_EBPF_FD_REUSE_SCORE = 52,
+    VT_EBPF_CONTEXT_STACKS = 54
   };
   const ::flatbuffers::Vector<::flatbuffers::Offset<rpc::CallInfoRaw>> *calls() const {
     return GetPointer<const ::flatbuffers::Vector<::flatbuffers::Offset<rpc::CallInfoRaw>> *>(VT_CALLS);
@@ -2433,6 +2451,33 @@ struct ProgInfoRaw FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   uint32_t ebpf_write_to_freed_count() const {
     return GetField<uint32_t>(VT_EBPF_WRITE_TO_FREED_COUNT, 0);
   }
+  uint32_t ebpf_page_alloc_count() const {
+    return GetField<uint32_t>(VT_EBPF_PAGE_ALLOC_COUNT, 0);
+  }
+  uint32_t ebpf_page_free_count() const {
+    return GetField<uint32_t>(VT_EBPF_PAGE_FREE_COUNT, 0);
+  }
+  uint32_t ebpf_page_reuse_count() const {
+    return GetField<uint32_t>(VT_EBPF_PAGE_REUSE_COUNT, 0);
+  }
+  uint32_t ebpf_page_uaf_score() const {
+    return GetField<uint32_t>(VT_EBPF_PAGE_UAF_SCORE, 0);
+  }
+  uint32_t ebpf_fd_install_count() const {
+    return GetField<uint32_t>(VT_EBPF_FD_INSTALL_COUNT, 0);
+  }
+  uint32_t ebpf_fd_close_count() const {
+    return GetField<uint32_t>(VT_EBPF_FD_CLOSE_COUNT, 0);
+  }
+  uint32_t ebpf_fd_reuse_count() const {
+    return GetField<uint32_t>(VT_EBPF_FD_REUSE_COUNT, 0);
+  }
+  uint32_t ebpf_fd_reuse_score() const {
+    return GetField<uint32_t>(VT_EBPF_FD_REUSE_SCORE, 0);
+  }
+  uint32_t ebpf_context_stacks() const {
+    return GetField<uint32_t>(VT_EBPF_CONTEXT_STACKS, 0);
+  }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyOffset(verifier, VT_CALLS) &&
@@ -2457,6 +2502,15 @@ struct ProgInfoRaw FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
            VerifyField<uint32_t>(verifier, VT_EBPF_PRIV_ESC_COUNT, 4) &&
            VerifyField<uint32_t>(verifier, VT_EBPF_CROSS_CACHE_COUNT, 4) &&
            VerifyField<uint32_t>(verifier, VT_EBPF_WRITE_TO_FREED_COUNT, 4) &&
+           VerifyField<uint32_t>(verifier, VT_EBPF_PAGE_ALLOC_COUNT, 4) &&
+           VerifyField<uint32_t>(verifier, VT_EBPF_PAGE_FREE_COUNT, 4) &&
+           VerifyField<uint32_t>(verifier, VT_EBPF_PAGE_REUSE_COUNT, 4) &&
+           VerifyField<uint32_t>(verifier, VT_EBPF_PAGE_UAF_SCORE, 4) &&
+           VerifyField<uint32_t>(verifier, VT_EBPF_FD_INSTALL_COUNT, 4) &&
+           VerifyField<uint32_t>(verifier, VT_EBPF_FD_CLOSE_COUNT, 4) &&
+           VerifyField<uint32_t>(verifier, VT_EBPF_FD_REUSE_COUNT, 4) &&
+           VerifyField<uint32_t>(verifier, VT_EBPF_FD_REUSE_SCORE, 4) &&
+           VerifyField<uint32_t>(verifier, VT_EBPF_CONTEXT_STACKS, 4) &&
            verifier.EndTable();
   }
   ProgInfoRawT *UnPack(const ::flatbuffers::resolver_function_t *_resolver = nullptr) const;
@@ -2519,6 +2573,33 @@ struct ProgInfoRawBuilder {
   void add_ebpf_write_to_freed_count(uint32_t ebpf_write_to_freed_count) {
     fbb_.AddElement<uint32_t>(ProgInfoRaw::VT_EBPF_WRITE_TO_FREED_COUNT, ebpf_write_to_freed_count, 0);
   }
+  void add_ebpf_page_alloc_count(uint32_t ebpf_page_alloc_count) {
+    fbb_.AddElement<uint32_t>(ProgInfoRaw::VT_EBPF_PAGE_ALLOC_COUNT, ebpf_page_alloc_count, 0);
+  }
+  void add_ebpf_page_free_count(uint32_t ebpf_page_free_count) {
+    fbb_.AddElement<uint32_t>(ProgInfoRaw::VT_EBPF_PAGE_FREE_COUNT, ebpf_page_free_count, 0);
+  }
+  void add_ebpf_page_reuse_count(uint32_t ebpf_page_reuse_count) {
+    fbb_.AddElement<uint32_t>(ProgInfoRaw::VT_EBPF_PAGE_REUSE_COUNT, ebpf_page_reuse_count, 0);
+  }
+  void add_ebpf_page_uaf_score(uint32_t ebpf_page_uaf_score) {
+    fbb_.AddElement<uint32_t>(ProgInfoRaw::VT_EBPF_PAGE_UAF_SCORE, ebpf_page_uaf_score, 0);
+  }
+  void add_ebpf_fd_install_count(uint32_t ebpf_fd_install_count) {
+    fbb_.AddElement<uint32_t>(ProgInfoRaw::VT_EBPF_FD_INSTALL_COUNT, ebpf_fd_install_count, 0);
+  }
+  void add_ebpf_fd_close_count(uint32_t ebpf_fd_close_count) {
+    fbb_.AddElement<uint32_t>(ProgInfoRaw::VT_EBPF_FD_CLOSE_COUNT, ebpf_fd_close_count, 0);
+  }
+  void add_ebpf_fd_reuse_count(uint32_t ebpf_fd_reuse_count) {
+    fbb_.AddElement<uint32_t>(ProgInfoRaw::VT_EBPF_FD_REUSE_COUNT, ebpf_fd_reuse_count, 0);
+  }
+  void add_ebpf_fd_reuse_score(uint32_t ebpf_fd_reuse_score) {
+    fbb_.AddElement<uint32_t>(ProgInfoRaw::VT_EBPF_FD_REUSE_SCORE, ebpf_fd_reuse_score, 0);
+  }
+  void add_ebpf_context_stacks(uint32_t ebpf_context_stacks) {
+    fbb_.AddElement<uint32_t>(ProgInfoRaw::VT_EBPF_CONTEXT_STACKS, ebpf_context_stacks, 0);
+  }
   explicit ProgInfoRawBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -2548,11 +2629,29 @@ inline ::flatbuffers::Offset<ProgInfoRaw> CreateProgInfoRaw(
     uint32_t ebpf_commit_creds_count = 0,
     uint32_t ebpf_priv_esc_count = 0,
     uint32_t ebpf_cross_cache_count = 0,
-    uint32_t ebpf_write_to_freed_count = 0) {
+    uint32_t ebpf_write_to_freed_count = 0,
+    uint32_t ebpf_page_alloc_count = 0,
+    uint32_t ebpf_page_free_count = 0,
+    uint32_t ebpf_page_reuse_count = 0,
+    uint32_t ebpf_page_uaf_score = 0,
+    uint32_t ebpf_fd_install_count = 0,
+    uint32_t ebpf_fd_close_count = 0,
+    uint32_t ebpf_fd_reuse_count = 0,
+    uint32_t ebpf_fd_reuse_score = 0,
+    uint32_t ebpf_context_stacks = 0) {
   ProgInfoRawBuilder builder_(_fbb);
   builder_.add_ebpf_min_reuse_ns(ebpf_min_reuse_ns);
   builder_.add_freshness(freshness);
   builder_.add_elapsed(elapsed);
+  builder_.add_ebpf_context_stacks(ebpf_context_stacks);
+  builder_.add_ebpf_fd_reuse_score(ebpf_fd_reuse_score);
+  builder_.add_ebpf_fd_reuse_count(ebpf_fd_reuse_count);
+  builder_.add_ebpf_fd_close_count(ebpf_fd_close_count);
+  builder_.add_ebpf_fd_install_count(ebpf_fd_install_count);
+  builder_.add_ebpf_page_uaf_score(ebpf_page_uaf_score);
+  builder_.add_ebpf_page_reuse_count(ebpf_page_reuse_count);
+  builder_.add_ebpf_page_free_count(ebpf_page_free_count);
+  builder_.add_ebpf_page_alloc_count(ebpf_page_alloc_count);
   builder_.add_ebpf_write_to_freed_count(ebpf_write_to_freed_count);
   builder_.add_ebpf_cross_cache_count(ebpf_cross_cache_count);
   builder_.add_ebpf_priv_esc_count(ebpf_priv_esc_count);
@@ -2588,7 +2687,16 @@ inline ::flatbuffers::Offset<ProgInfoRaw> CreateProgInfoRawDirect(
     uint32_t ebpf_commit_creds_count = 0,
     uint32_t ebpf_priv_esc_count = 0,
     uint32_t ebpf_cross_cache_count = 0,
-    uint32_t ebpf_write_to_freed_count = 0) {
+    uint32_t ebpf_write_to_freed_count = 0,
+    uint32_t ebpf_page_alloc_count = 0,
+    uint32_t ebpf_page_free_count = 0,
+    uint32_t ebpf_page_reuse_count = 0,
+    uint32_t ebpf_page_uaf_score = 0,
+    uint32_t ebpf_fd_install_count = 0,
+    uint32_t ebpf_fd_close_count = 0,
+    uint32_t ebpf_fd_reuse_count = 0,
+    uint32_t ebpf_fd_reuse_score = 0,
+    uint32_t ebpf_context_stacks = 0) {
   auto calls__ = calls ? _fbb.CreateVector<::flatbuffers::Offset<rpc::CallInfoRaw>>(*calls) : 0;
   auto extra_raw__ = extra_raw ? _fbb.CreateVector<::flatbuffers::Offset<rpc::CallInfoRaw>>(*extra_raw) : 0;
   return rpc::CreateProgInfoRaw(
@@ -2609,7 +2717,16 @@ inline ::flatbuffers::Offset<ProgInfoRaw> CreateProgInfoRawDirect(
       ebpf_commit_creds_count,
       ebpf_priv_esc_count,
       ebpf_cross_cache_count,
-      ebpf_write_to_freed_count);
+      ebpf_write_to_freed_count,
+      ebpf_page_alloc_count,
+      ebpf_page_free_count,
+      ebpf_page_reuse_count,
+      ebpf_page_uaf_score,
+      ebpf_fd_install_count,
+      ebpf_fd_close_count,
+      ebpf_fd_reuse_count,
+      ebpf_fd_reuse_score,
+      ebpf_context_stacks);
 }
 
 ::flatbuffers::Offset<ProgInfoRaw> CreateProgInfoRaw(::flatbuffers::FlatBufferBuilder &_fbb, const ProgInfoRawT *_o, const ::flatbuffers::rehasher_function_t *_rehasher = nullptr);
@@ -3702,7 +3819,16 @@ inline ProgInfoRawT::ProgInfoRawT(const ProgInfoRawT &o)
         ebpf_commit_creds_count(o.ebpf_commit_creds_count),
         ebpf_priv_esc_count(o.ebpf_priv_esc_count),
         ebpf_cross_cache_count(o.ebpf_cross_cache_count),
-        ebpf_write_to_freed_count(o.ebpf_write_to_freed_count) {
+        ebpf_write_to_freed_count(o.ebpf_write_to_freed_count),
+        ebpf_page_alloc_count(o.ebpf_page_alloc_count),
+        ebpf_page_free_count(o.ebpf_page_free_count),
+        ebpf_page_reuse_count(o.ebpf_page_reuse_count),
+        ebpf_page_uaf_score(o.ebpf_page_uaf_score),
+        ebpf_fd_install_count(o.ebpf_fd_install_count),
+        ebpf_fd_close_count(o.ebpf_fd_close_count),
+        ebpf_fd_reuse_count(o.ebpf_fd_reuse_count),
+        ebpf_fd_reuse_score(o.ebpf_fd_reuse_score),
+        ebpf_context_stacks(o.ebpf_context_stacks) {
   calls.reserve(o.calls.size());
   for (const auto &calls_ : o.calls) { calls.emplace_back((calls_) ? new rpc::CallInfoRawT(*calls_) : nullptr); }
   extra_raw.reserve(o.extra_raw.size());
@@ -3727,6 +3853,15 @@ inline ProgInfoRawT &ProgInfoRawT::operator=(ProgInfoRawT o) FLATBUFFERS_NOEXCEP
   std::swap(ebpf_priv_esc_count, o.ebpf_priv_esc_count);
   std::swap(ebpf_cross_cache_count, o.ebpf_cross_cache_count);
   std::swap(ebpf_write_to_freed_count, o.ebpf_write_to_freed_count);
+  std::swap(ebpf_page_alloc_count, o.ebpf_page_alloc_count);
+  std::swap(ebpf_page_free_count, o.ebpf_page_free_count);
+  std::swap(ebpf_page_reuse_count, o.ebpf_page_reuse_count);
+  std::swap(ebpf_page_uaf_score, o.ebpf_page_uaf_score);
+  std::swap(ebpf_fd_install_count, o.ebpf_fd_install_count);
+  std::swap(ebpf_fd_close_count, o.ebpf_fd_close_count);
+  std::swap(ebpf_fd_reuse_count, o.ebpf_fd_reuse_count);
+  std::swap(ebpf_fd_reuse_score, o.ebpf_fd_reuse_score);
+  std::swap(ebpf_context_stacks, o.ebpf_context_stacks);
   return *this;
 }
 
@@ -3756,6 +3891,15 @@ inline void ProgInfoRaw::UnPackTo(ProgInfoRawT *_o, const ::flatbuffers::resolve
   { auto _e = ebpf_priv_esc_count(); _o->ebpf_priv_esc_count = _e; }
   { auto _e = ebpf_cross_cache_count(); _o->ebpf_cross_cache_count = _e; }
   { auto _e = ebpf_write_to_freed_count(); _o->ebpf_write_to_freed_count = _e; }
+  { auto _e = ebpf_page_alloc_count(); _o->ebpf_page_alloc_count = _e; }
+  { auto _e = ebpf_page_free_count(); _o->ebpf_page_free_count = _e; }
+  { auto _e = ebpf_page_reuse_count(); _o->ebpf_page_reuse_count = _e; }
+  { auto _e = ebpf_page_uaf_score(); _o->ebpf_page_uaf_score = _e; }
+  { auto _e = ebpf_fd_install_count(); _o->ebpf_fd_install_count = _e; }
+  { auto _e = ebpf_fd_close_count(); _o->ebpf_fd_close_count = _e; }
+  { auto _e = ebpf_fd_reuse_count(); _o->ebpf_fd_reuse_count = _e; }
+  { auto _e = ebpf_fd_reuse_score(); _o->ebpf_fd_reuse_score = _e; }
+  { auto _e = ebpf_context_stacks(); _o->ebpf_context_stacks = _e; }
 }
 
 inline ::flatbuffers::Offset<ProgInfoRaw> ProgInfoRaw::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const ProgInfoRawT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
@@ -3783,6 +3927,15 @@ inline ::flatbuffers::Offset<ProgInfoRaw> CreateProgInfoRaw(::flatbuffers::FlatB
   auto _ebpf_priv_esc_count = _o->ebpf_priv_esc_count;
   auto _ebpf_cross_cache_count = _o->ebpf_cross_cache_count;
   auto _ebpf_write_to_freed_count = _o->ebpf_write_to_freed_count;
+  auto _ebpf_page_alloc_count = _o->ebpf_page_alloc_count;
+  auto _ebpf_page_free_count = _o->ebpf_page_free_count;
+  auto _ebpf_page_reuse_count = _o->ebpf_page_reuse_count;
+  auto _ebpf_page_uaf_score = _o->ebpf_page_uaf_score;
+  auto _ebpf_fd_install_count = _o->ebpf_fd_install_count;
+  auto _ebpf_fd_close_count = _o->ebpf_fd_close_count;
+  auto _ebpf_fd_reuse_count = _o->ebpf_fd_reuse_count;
+  auto _ebpf_fd_reuse_score = _o->ebpf_fd_reuse_score;
+  auto _ebpf_context_stacks = _o->ebpf_context_stacks;
   return rpc::CreateProgInfoRaw(
       _fbb,
       _calls,
@@ -3801,7 +3954,16 @@ inline ::flatbuffers::Offset<ProgInfoRaw> CreateProgInfoRaw(::flatbuffers::FlatB
       _ebpf_commit_creds_count,
       _ebpf_priv_esc_count,
       _ebpf_cross_cache_count,
-      _ebpf_write_to_freed_count);
+      _ebpf_write_to_freed_count,
+      _ebpf_page_alloc_count,
+      _ebpf_page_free_count,
+      _ebpf_page_reuse_count,
+      _ebpf_page_uaf_score,
+      _ebpf_fd_install_count,
+      _ebpf_fd_close_count,
+      _ebpf_fd_reuse_count,
+      _ebpf_fd_reuse_score,
+      _ebpf_context_stacks);
 }
 
 inline ExecResultRawT::ExecResultRawT(const ExecResultRawT &o)
