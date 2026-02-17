@@ -286,6 +286,113 @@ syzkaller/                  # Modified syzkaller (all PROBE changes here)
     probe.cfg               # Fuzzer configuration
 ```
 
+## Changes from Vanilla Syzkaller
+
+All PROBE modifications are within the `syzkaller/` directory. The vanilla syzkaller reference is unmodified.
+
+### New Files (24)
+
+| File | Description |
+|------|-------------|
+| `pkg/fuzzer/dezzer.go` | DEzzer exploit pattern detection (Thompson Sampling + DE) |
+| `pkg/fuzzer/ngram.go` | BiGRU N-gram prediction client (TCP) |
+| `pkg/fuzzer/bayesopt.go` | Bayesian Optimization hyperparameter tuning |
+| `pkg/fuzzer/linucb.go` | LinUCB contextual bandit algorithm |
+| `pkg/fuzzer/schedts.go` | Scheduling timestamp tracker |
+| `pkg/fuzzer/lru.go` | LRU cache |
+| `pkg/fuzzer/anamnesis.go` | Crash memory mechanism |
+| `pkg/corpus/mi.go` | Mutual Information seed scheduling |
+| `pkg/aitriage/` | AI triage package (LLM client, prompts, embeddings, specgen) |
+| `syz-manager/ai_triage.go` | Manager-triage integration |
+| `syz-manager/syzgpt.go` | LLM client wrapper |
+| `executor/ebpf/` | BPF programs (`probe_ebpf.bpf.c/h/o`) |
+| `tools/syz-ebpf-loader/` | eBPF loader for VM deployment |
+| `tools/mock_model/` | MOCK BiGRU prediction server (Python/CUDA) |
+| `pkg/manager/html/ai.html` | AI main dashboard |
+| `pkg/manager/html/aitriage.html` | AI triage page |
+| `pkg/manager/html/aicrash.html` | AI crash analysis page |
+| `pkg/manager/html/aiembeddings.html` | AI embedding/cluster page |
+| `pkg/manager/html/aispecgen.html` | AI spec generation page |
+| `pkg/manager/html/aianalytics.html` | AI analytics page |
+| `sys/linux/dev_md_raid.txt` | RAID syscall specification |
+| `sys/linux/dev_mmc.txt` | MMC syscall specification |
+| `setup/probe.sh` | Fuzzer launch script (auto-starts MOCK server) |
+| `setup/stop_probe.sh` | Clean shutdown script |
+
+### Modified Files (38)
+
+**Fuzzing Core:**
+
+| File | Changes |
+|------|---------|
+| `pkg/fuzzer/fuzzer.go` | processResult, Focus/DEzzer, BO, UCB-1 feedback loop |
+| `pkg/fuzzer/job.go` | Mutation logic extension (focus, smash, BiGRU tracking) |
+| `pkg/fuzzer/job_test.go` | Test updates for new mutation fields |
+| `pkg/fuzzer/cover.go` | Coverage extension (Shannon entropy, N-gram) |
+| `pkg/fuzzer/stats.go` | PROBE-specific dashboard statistics |
+| `pkg/fuzzer/queue/queue.go` | Request struct extension (UsedBiGRU, etc.) |
+| `pkg/signal/signal.go` | Signal processing extension |
+
+**Corpus & Mutation:**
+
+| File | Changes |
+|------|---------|
+| `pkg/corpus/corpus.go` | Corpus management extension |
+| `pkg/corpus/minimize.go` | Minimization logic |
+| `pkg/corpus/prio.go` | Priority calculation |
+
+**Program Representation:**
+
+| File | Changes |
+|------|---------|
+| `prog/prog.go` | Program struct extension (metadata fields) |
+| `prog/mutation.go` | Mutation strategies (OOB, LenType, fault injection) |
+| `prog/clone.go` | Program cloning |
+| `prog/encoding.go` | Serialization |
+| `prog/encodingexec.go` | Execution encoding |
+| `prog/hints.go` | Hints system (OOB boundary extension) |
+| `prog/minimization.go` | Minimization |
+| `prog/prio.go` / `prog/size.go` | Priority / size calculation |
+| `prog/encoding_test.go` / `prog/encodingexec_test.go` / `prog/hints_test.go` | Test updates |
+
+**Executor (C++):**
+
+| File | Changes |
+|------|---------|
+| `executor/executor.cc` | eBPF integration, shared memory |
+| `executor/executor_linux.h` | `ebpf_init()`, `ebpf_read_and_reset()` |
+| `executor/shmem.h` | Shared memory extension |
+
+**FlatBuffers IPC:**
+
+| File | Changes |
+|------|---------|
+| `pkg/flatrpc/flatrpc.fbs` | 12 eBPF metric fields added |
+| `pkg/flatrpc/flatrpc.go` | Go bindings |
+| `pkg/flatrpc/flatrpc.h` | C++ bindings |
+
+**Manager & Web:**
+
+| File | Changes |
+|------|---------|
+| `syz-manager/manager.go` | AI triage / eBPF deploy integration |
+| `syz-manager/stats.go` | PROBE statistics display |
+| `pkg/manager/http.go` | AI dashboard routing |
+| `pkg/manager/crash.go` | Crash handling extension |
+| `pkg/manager/html/main.html` / `common.html` / `crash.html` | UI modifications |
+| `pkg/mgrconfig/config.go` | AI/eBPF/embedding config fields |
+| `pkg/html/html.go` / `pages/stats.html` / `pages/style.css` | Style updates |
+| `pkg/report/crash/types.go` / `impact_score.go` | Crash report scoring |
+
+**Other:**
+
+| File | Changes |
+|------|---------|
+| `go.mod` / `go.sum` | Dependencies |
+| `Makefile` / `.gitignore` | Build targets |
+| `sys/register.go` | Syscall registration |
+| `sys/gen/*.gob.flate` (8 files) | Generated syscall binaries |
+
 ## Related Research
 
 PROBE integrates and adapts techniques from the following research:
@@ -620,6 +727,113 @@ syzkaller/                  # 수정된 syzkaller (모든 PROBE 변경사항)
   setup/
     probe.cfg               # 퍼저 설정 파일
 ```
+
+## 바닐라 Syzkaller 대비 변경 사항
+
+모든 PROBE 수정은 `syzkaller/` 디렉토리 내에서만 이루어집니다.
+
+### 신규 파일 (24개)
+
+| 파일 | 설명 |
+|------|------|
+| `pkg/fuzzer/dezzer.go` | DEzzer 익스플로잇 패턴 탐지 (Thompson Sampling + DE) |
+| `pkg/fuzzer/ngram.go` | BiGRU N-gram 예측 클라이언트 (TCP) |
+| `pkg/fuzzer/bayesopt.go` | 베이지안 최적화 하이퍼파라미터 튜닝 |
+| `pkg/fuzzer/linucb.go` | LinUCB 컨텍스트 밴딧 알고리즘 |
+| `pkg/fuzzer/schedts.go` | 스케줄링 타임스탬프 추적기 |
+| `pkg/fuzzer/lru.go` | LRU 캐시 |
+| `pkg/fuzzer/anamnesis.go` | 크래시 기억 메커니즘 |
+| `pkg/corpus/mi.go` | 상호 정보량 시드 스케줄링 |
+| `pkg/aitriage/` | AI 트리아지 패키지 (LLM 클라이언트, 프롬프트, 임베딩, 스펙 생성) |
+| `syz-manager/ai_triage.go` | 매니저-트리아지 통합 |
+| `syz-manager/syzgpt.go` | LLM 클라이언트 래퍼 |
+| `executor/ebpf/` | BPF 프로그램 (`probe_ebpf.bpf.c/h/o`) |
+| `tools/syz-ebpf-loader/` | VM 배포용 eBPF 로더 |
+| `tools/mock_model/` | MOCK BiGRU 예측 서버 (Python/CUDA) |
+| `pkg/manager/html/ai.html` | AI 메인 대시보드 |
+| `pkg/manager/html/aitriage.html` | AI 트리아지 페이지 |
+| `pkg/manager/html/aicrash.html` | AI 크래시 분석 페이지 |
+| `pkg/manager/html/aiembeddings.html` | AI 임베딩/클러스터 페이지 |
+| `pkg/manager/html/aispecgen.html` | AI 스펙 생성 페이지 |
+| `pkg/manager/html/aianalytics.html` | AI 분석 페이지 |
+| `sys/linux/dev_md_raid.txt` | RAID 시스콜 명세 |
+| `sys/linux/dev_mmc.txt` | MMC 시스콜 명세 |
+| `setup/probe.sh` | 퍼저 실행 스크립트 (MOCK 서버 자동 시작) |
+| `setup/stop_probe.sh` | 종료 스크립트 |
+
+### 수정된 파일 (38개)
+
+**퍼징 코어:**
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `pkg/fuzzer/fuzzer.go` | processResult, Focus/DEzzer, BO, UCB-1 피드백 루프 |
+| `pkg/fuzzer/job.go` | 뮤테이션 로직 확장 (focus, smash, BiGRU 추적) |
+| `pkg/fuzzer/job_test.go` | 새 뮤테이션 필드 테스트 |
+| `pkg/fuzzer/cover.go` | 커버리지 확장 (Shannon 엔트로피, N-gram) |
+| `pkg/fuzzer/stats.go` | PROBE 전용 대시보드 통계 |
+| `pkg/fuzzer/queue/queue.go` | Request 구조체 확장 (UsedBiGRU 등) |
+| `pkg/signal/signal.go` | 시그널 처리 확장 |
+
+**코퍼스 & 뮤테이션:**
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `pkg/corpus/corpus.go` | 코퍼스 관리 확장 |
+| `pkg/corpus/minimize.go` | 최소화 로직 |
+| `pkg/corpus/prio.go` | 우선순위 계산 |
+
+**프로그램 표현:**
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `prog/prog.go` | 프로그램 구조체 확장 (메타데이터 필드) |
+| `prog/mutation.go` | 뮤테이션 전략 (OOB, LenType, fault injection) |
+| `prog/clone.go` | 프로그램 복제 |
+| `prog/encoding.go` | 직렬화 |
+| `prog/encodingexec.go` | 실행 인코딩 |
+| `prog/hints.go` | 힌트 시스템 (OOB 경계 확장) |
+| `prog/minimization.go` | 최소화 |
+| `prog/prio.go` / `prog/size.go` | 우선순위 / 크기 계산 |
+| `prog/encoding_test.go` / `prog/encodingexec_test.go` / `prog/hints_test.go` | 테스트 업데이트 |
+
+**Executor (C++):**
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `executor/executor.cc` | eBPF 통합, 공유 메모리 |
+| `executor/executor_linux.h` | `ebpf_init()`, `ebpf_read_and_reset()` |
+| `executor/shmem.h` | 공유 메모리 확장 |
+
+**FlatBuffers IPC:**
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `pkg/flatrpc/flatrpc.fbs` | eBPF 메트릭 필드 12개 추가 |
+| `pkg/flatrpc/flatrpc.go` | Go 바인딩 |
+| `pkg/flatrpc/flatrpc.h` | C++ 바인딩 |
+
+**매니저 & 웹:**
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `syz-manager/manager.go` | AI 트리아지 / eBPF 배포 통합 |
+| `syz-manager/stats.go` | PROBE 통계 표시 |
+| `pkg/manager/http.go` | AI 대시보드 라우팅 |
+| `pkg/manager/crash.go` | 크래시 처리 확장 |
+| `pkg/manager/html/main.html` / `common.html` / `crash.html` | UI 수정 |
+| `pkg/mgrconfig/config.go` | AI/eBPF/임베딩 설정 필드 |
+| `pkg/html/html.go` / `pages/stats.html` / `pages/style.css` | 스타일 업데이트 |
+| `pkg/report/crash/types.go` / `impact_score.go` | 크래시 리포트 점수화 |
+
+**기타:**
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `go.mod` / `go.sum` | 의존성 |
+| `Makefile` / `.gitignore` | 빌드 타겟 |
+| `sys/register.go` | 시스콜 등록 |
+| `sys/gen/*.gob.flate` (8개) | 생성된 시스콜 바이너리 |
 
 ## 관련 연구
 
