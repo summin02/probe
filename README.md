@@ -64,16 +64,37 @@ Host (syz-manager)                Guest VM (QEMU)
 |  - UAF/OOB scoring       |      |  UAF score computation           |
 |  - Focus triggering      |      |  FlatBuffers serialization       |
 |  - TS weight selection   |      |  Syscall execution               |
-+--------------------------+      +----------------------------------+
+|  - NgramClient (TCP)     |      +----------------------------------+
++--------------------------+
+         |
+         v
++--------------------------+
+| MOCK BiGRU Server (CUDA) |
+|  - Syscall prediction    |
+|  - JSON-TCP port 50051   |
+|  - Online retraining     |
+|  - Training data collect |
++--------------------------+
 ```
 
 ## Requirements
 
+### Minimum Specs
+- **CPU**: 4 cores (x86_64 with VT-x)
+- **RAM**: 8GB (4GB for VMs, limited to 2 VMs)
+- **Disk**: 30GB free space
+- **GPU**: Not required (BiGRU server runs on CPU)
+
+### Recommended Specs
+- **CPU**: 8+ cores (x86_64 with VT-x/AMD-V)
+- **RAM**: 32GB+ (10GB for QEMU VMs, 10 concurrent VMs)
+- **Disk**: 100GB+ SSD (corpus + crash storage grows over time)
+- **GPU**: NVIDIA GPU with CUDA (for BiGRU model inference, ~10x faster)
+- **Network**: Internet access for AI API calls (optional)
+
 ### System
 - **OS**: Ubuntu/Debian (tested on Ubuntu 24.04+)
 - **Architecture**: x86_64
-- **RAM**: 16GB+ recommended (10GB allocated to QEMU VMs)
-- **Disk**: 50GB+ free space
 - **Virtualization**: KVM support (`/dev/kvm`)
 
 ### Software
@@ -81,13 +102,15 @@ Host (syz-manager)                Guest VM (QEMU)
 - Clang, LLVM, LLD (for eBPF compilation)
 - QEMU (`qemu-system-x86`, `qemu-utils`, `qemu-kvm`)
 - Go 1.24+ (installed automatically by setup script)
-- Python 3 (for rootfs image creation)
+- Python 3.10+ (for rootfs image creation + BiGRU model server)
+- PyTorch 2.0+ (for MOCK BiGRU model — `pip install torch`)
 - `debootstrap` (for Debian rootfs)
 - `libelf-dev`, `libssl-dev`, `libncurses-dev`, `dwarves`
 
 ### Optional
-- **LLM API key** (Anthropic or OpenAI) for AI-guided fuzzing
+- **LLM API key** (DeepSeek / Anthropic / OpenAI) for AI-guided fuzzing
 - **eBPF**: Requires `CONFIG_BPF=y`, `CONFIG_KPROBES=y` in target kernel
+- **Embedding API key** (OpenAI) for GPTrace crash deduplication
 
 ## Quick Start
 
@@ -169,14 +192,19 @@ go test ./pkg/fuzzer/...   # Specific package
 | SyzGPT Seeds | Dependency-aware seed generation via LLM | Done |
 | GPTrace Dedup | Embedding-based crash cluster deduplication | Done |
 | Write-to-freed Detection | copy_from_user kprobe for freed slab writes | Done |
-| Operator-Pair TS | Conditional mutation operator probabilities | Planned |
-| Cluster TS | Per-subsystem mutation weights | Planned |
-| Effective Component | Crash-essential syscall inference via ablation | Planned |
-| Context-Aware Mutation | BiGRU language model for syscall dependencies | Planned |
-| Multi-Objective Optimization | Meta-bandit (coverage + memory safety + priv-esc) | Planned |
+| Operator-Pair TS | Conditional mutation operator probabilities (MuoFuzz) | Done |
+| Cluster TS | Per-subsystem mutation weights (SeamFuzz) | Done |
+| Effective Component | Crash-essential syscall inference via ablation (SeqFuzz) | Done |
+| Context-Aware Mutation | BiGRU language model for syscall prediction (MOCK) | Done |
+| Multi-Objective Optimization | Meta-bandit (coverage + memory safety + priv-esc, MobFuzz) | Done |
+| N-gram/BiGRU Server | CUDA-accelerated syscall prediction with persistent TCP | Done |
+| Syscall Spec Generation | LLM-driven syzlang spec auto-generation (DeepSeek) | Done |
+| MI Seed Scheduling | Mutual Information corpus prioritization | Done |
+| LACE Race Detection | eBPF-based concurrent access pattern detection | Done |
+| Bayesian Optimization | Gaussian Process hyperparameter tuning | Done |
+| LinUCB Arm Selection | Contextual bandit for mutation strategy routing | Done |
 | Binary Coverage | KBinCov binary-level coverage tracking | Planned |
-| Syscall Spec Generation | LLM-driven syzlang spec auto-generation | Planned |
-| Concurrency Testing | eBPF sched_ext for race condition detection | Planned |
+| Concurrency Testing | Full ACTOR delay injection + OZZ sched_yield | Partial |
 
 Full technical plan: [`probe.md`](probe.md) (English) / [`probe_kor.md`](probe_kor.md) (Korean)
 
@@ -208,11 +236,20 @@ syzkaller/                  # Modified syzkaller (all PROBE changes here)
       fuzzer.go             # Fuzzing loop + eBPF feedback
       job.go                # Focus mode, smash, triage jobs
       dezzer.go             # DEzzer TS+DE optimizer
+      ngram.go              # NgramClient (BiGRU TCP client)
+      linucb.go             # LinUCB contextual bandit
+      bayesopt.go           # Bayesian Optimization (GP)
       stats.go              # Dashboard statistics
+    corpus/
+      mi.go                 # Mutual Information seed scheduling
     flatrpc/                # FlatBuffers RPC (executor <-> manager)
     manager/                # Manager business logic
   tools/
     syz-ebpf-loader/        # BPF loader for VM deployment
+    mock_model/             # MOCK BiGRU prediction server
+      server.py             # JSON-TCP + gRPC server (CUDA)
+      model.py              # BiGRU neural network
+      train.py              # Training pipeline
   setup/
     probe.cfg               # Fuzzer configuration
 ```
@@ -326,16 +363,37 @@ Google [syzkaller](https://github.com/google/syzkaller) 기반의 **익스플로
 |  - UAF/OOB 점수화         |      |  UAF 점수 계산                   |
 |  - Focus 트리거           |      |  FlatBuffers 직렬화              |
 |  - TS 가중치 선택          |      |  시스콜 실행                     |
-+--------------------------+      +----------------------------------+
+|  - NgramClient (TCP)     |      +----------------------------------+
++--------------------------+
+         |
+         v
++--------------------------+
+| MOCK BiGRU 서버 (CUDA)    |
+|  - 시스콜 예측             |
+|  - JSON-TCP 포트 50051    |
+|  - 온라인 재훈련           |
+|  - 훈련 데이터 수집         |
++--------------------------+
 ```
 
 ## 요구사항
 
+### 최소 사양
+- **CPU**: 4코어 (x86_64, VT-x 지원)
+- **RAM**: 8GB (VM용 4GB, 최대 2개 VM)
+- **디스크**: 30GB 여유 공간
+- **GPU**: 불필요 (BiGRU 서버 CPU 모드 동작)
+
+### 권장 사양
+- **CPU**: 8코어 이상 (x86_64, VT-x/AMD-V)
+- **RAM**: 32GB 이상 (QEMU VM 10GB, 동시 10개 VM)
+- **디스크**: 100GB 이상 SSD (코퍼스 + 크래시 저장소 시간에 따라 증가)
+- **GPU**: NVIDIA GPU + CUDA (BiGRU 모델 추론, ~10배 빠름)
+- **네트워크**: AI API 호출용 인터넷 (선택)
+
 ### 시스템
 - **OS**: Ubuntu/Debian (Ubuntu 24.04+ 에서 테스트됨)
 - **아키텍처**: x86_64
-- **RAM**: 16GB 이상 권장 (QEMU VM에 10GB 할당)
-- **디스크**: 50GB 이상 여유 공간
 - **가상화**: KVM 지원 (`/dev/kvm`)
 
 ### 소프트웨어
@@ -343,12 +401,14 @@ Google [syzkaller](https://github.com/google/syzkaller) 기반의 **익스플로
 - Clang, LLVM, LLD (eBPF 컴파일용)
 - QEMU (`qemu-system-x86`, `qemu-utils`, `qemu-kvm`)
 - Go 1.24+ (설치 스크립트가 자동 설치)
-- Python 3 (rootfs 이미지 생성용)
+- Python 3.10+ (rootfs 이미지 생성 + BiGRU 모델 서버용)
+- PyTorch 2.0+ (MOCK BiGRU 모델 — `pip install torch`)
 - `debootstrap` (Debian rootfs용)
 - `libelf-dev`, `libssl-dev`, `libncurses-dev`, `dwarves`
 
 ### 선택사항
-- **LLM API 키** (Anthropic 또는 OpenAI) -- AI 기반 퍼징용
+- **LLM API 키** (DeepSeek / Anthropic / OpenAI) -- AI 기반 퍼징용
+- **임베딩 API 키** (OpenAI) -- GPTrace 크래시 중복 제거용
 - **eBPF**: 대상 커널에서 `CONFIG_BPF=y`, `CONFIG_KPROBES=y` 필요
 
 ## 빠른 시작
@@ -431,14 +491,19 @@ go test ./pkg/fuzzer/...   # 특정 패키지
 | SyzGPT 시드 | LLM 의존성 기반 시드 생성 | 완료 |
 | GPTrace Dedup | 임베딩 기반 크래시 클러스터 중복 제거 | 완료 |
 | Write-to-freed 탐지 | copy_from_user kprobe로 freed slab 쓰기 탐지 | 완료 |
-| 연산자-쌍 TS | 조건부 뮤테이션 연산자 확률 | 계획됨 |
-| 클러스터 TS | 커널 서브시스템별 뮤테이션 가중치 | 계획됨 |
-| 유효 컴포넌트 추론 | ablation 기반 크래시 필수 시스콜 식별 | 계획됨 |
-| 컨텍스트 인식 뮤테이션 | BiGRU 언어 모델 기반 시스콜 의존성 | 계획됨 |
-| 다목적 최적화 | 메타-밴딧 (커버리지 + 메모리 안전 + 권한 상승) | 계획됨 |
+| 연산자-쌍 TS | 조건부 뮤테이션 연산자 확률 (MuoFuzz) | 완료 |
+| 클러스터 TS | 커널 서브시스템별 뮤테이션 가중치 (SeamFuzz) | 완료 |
+| 유효 컴포넌트 추론 | ablation 기반 크래시 필수 시스콜 식별 (SeqFuzz) | 완료 |
+| 컨텍스트 인식 뮤테이션 | BiGRU 언어 모델 기반 시스콜 예측 (MOCK) | 완료 |
+| 다목적 최적화 | 메타-밴딧 (커버리지 + 메모리 안전 + 권한 상승, MobFuzz) | 완료 |
+| N-gram/BiGRU 서버 | CUDA 가속 시스콜 예측 + 영구 TCP 연결 | 완료 |
+| 시스콜 스펙 자동 생성 | LLM 기반 syzlang 스펙 자동 생성 (DeepSeek) | 완료 |
+| MI 시드 스케줄링 | 상호 정보량 기반 코퍼스 우선순위화 | 완료 |
+| LACE 레이스 탐지 | eBPF 기반 동시 접근 패턴 탐지 | 완료 |
+| 베이지안 최적화 | 가우시안 프로세스 하이퍼파라미터 튜닝 | 완료 |
+| LinUCB 암 선택 | 컨텍스트 밴딧 기반 뮤테이션 전략 라우팅 | 완료 |
 | 바이너리 커버리지 | KBinCov 바이너리 레벨 커버리지 추적 | 계획됨 |
-| 시스콜 스펙 자동 생성 | LLM 기반 syzlang 스펙 자동 생성 | 계획됨 |
-| 동시성 테스트 | eBPF sched_ext 기반 레이스 컨디션 탐지 | 계획됨 |
+| 동시성 테스트 | 전체 ACTOR 딜레이 인젝션 + OZZ sched_yield | 부분 |
 
 상세 기술 문서: [`probe.md`](probe.md) (영문) / [`probe_kor.md`](probe_kor.md) (한국어)
 
@@ -470,11 +535,20 @@ syzkaller/                  # 수정된 syzkaller (모든 PROBE 변경사항)
       fuzzer.go             # 퍼징 루프 + eBPF 피드백
       job.go                # Focus mode, smash, triage 작업
       dezzer.go             # DEzzer TS+DE 옵티마이저
+      ngram.go              # NgramClient (BiGRU TCP 클라이언트)
+      linucb.go             # LinUCB 컨텍스트 밴딧
+      bayesopt.go           # 베이지안 최적화 (GP)
       stats.go              # 대시보드 통계
+    corpus/
+      mi.go                 # 상호 정보량 시드 스케줄링
     flatrpc/                # FlatBuffers RPC (executor <-> manager)
     manager/                # Manager 비즈니스 로직
   tools/
     syz-ebpf-loader/        # VM 배포용 BPF 로더
+    mock_model/             # MOCK BiGRU 예측 서버
+      server.py             # JSON-TCP + gRPC 서버 (CUDA)
+      model.py              # BiGRU 신경망
+      train.py              # 훈련 파이프라인
   setup/
     probe.cfg               # 퍼저 설정 파일
 ```

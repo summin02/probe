@@ -42,12 +42,31 @@
 |    - OOB boundary value focused mutation              |
 |    - Custom syscall descriptions (uffd, io_uring etc) |
 |                                                       |
-|  [Phase 5] eBPF Runtime Monitor                       |
+|  [Phase 5] eBPF Runtime Monitor [DONE]                |
 |    - Slab object lifecycle tracking (kprobe-based)    |
 |    - Exploitability scoring                           |
 |    - Real-time feedback to Focus Mode                 |
 |    - No kernel source modification (attach to         |
 |      existing kprobes/tracepoints)                    |
+|                                                       |
+|  [Phase 7-8] Advanced Mutation & Coverage [DONE]      |
+|    - MuoFuzz operator-pair Thompson Sampling          |
+|    - SeamFuzz cluster-based TS scheduling             |
+|    - MOCK BiGRU syscall prediction (CUDA server)      |
+|    - SeqFuzz effective component inference            |
+|    - MobFuzz multi-objective optimization             |
+|                                                       |
+|  [Phase 9-10] AI Spec Generation [DONE]               |
+|    - DeepSeek-driven syzlang auto-generation          |
+|    - eBPF metric gap analysis                         |
+|    - Page/FD/context-sensitive coverage               |
+|                                                       |
+|  [Phase 11] Performance & Race Detection [DONE]       |
+|    - LACE eBPF race detection                         |
+|    - MI seed scheduling                               |
+|    - LinUCB contextual bandit                         |
+|    - Bayesian Optimization (GP)                       |
+|    - CUSUM circuit breaker                            |
 |                                                       |
 +------------------------------------------------------+
 ```
@@ -635,6 +654,8 @@ cd syzkaller && make host  # Builds all host tools including syz-manager
 
 **Design**: Python subprocess (PyTorch) running as TCP/JSON server (lightweight alternative to gRPC to avoid Go dependency). Go `NgramClient` connects to `tools/mock_model/server.py`. `insertCall()` uses `PredictCall` callback (50% chance) to get BiGRU prediction → `generateParticularCall()` for predicted syscall. Health check every 5s, auto-fallback to ChoiceTable if Python server unavailable. UCB-1 tracks BiGRU vs ChoiceTable success rates with 100-trial cold start exploration.
 
+**Persistent connection fix**: Server uses persistent JSON-line TCP connections (port 50051) with 300s idle timeout. NgramClient in Go maintains a single persistent connection with UCB-1 selection between BiGRU and ChoiceTable strategies.
+
 **Manager integration**: `mockModelRetrainLoop` goroutine triggers retrain every 2 hours via NgramClient.
 
 **Overhead**: < 1% (inference < 1ms via GPU, RTX 3070 Ti). Training: ~30s every 2h (non-blocking). **Expected impact**: +3-12% coverage (paper average).
@@ -766,7 +787,7 @@ stepD() in aitriage.go:
 
 ---
 
-## Phase 11: Concurrency & Performance Optimization — PARTIAL
+## Phase 11: Concurrency & Performance Optimization — DONE
 
 **Goal**: Add concurrency bug detection capabilities (LACE race detection, ACTOR delay injection) and performance optimizations (MI seed scheduling, LinUCB contextual bandit, Bayesian Optimization).
 
@@ -783,19 +804,19 @@ Critical bug fixes and performance improvements identified during Phase 8-10 int
 
 **11m. MI (Mutual Information) Seed Scheduling**: Information-theoretic seed prioritization using mutual information between program features and coverage outcomes. `pkg/corpus/mi.go` implements MI-based seed ranking for corpus scheduling optimization.
 
-### Wave 3 (11j): ACTOR + LinUCB + Spectral Graph — PENDING
+### Wave 3 (11j): ACTOR + LinUCB + Spectral Graph — DONE
 
-**11j-ACTOR**: Delay injection between syscalls to expose race conditions (ACTOR, USENIX Sec 2023). Not yet implemented.
+**11j-ACTOR**: Delay injection between syscalls to expose race conditions (ACTOR, USENIX Sec 2023). Implemented.
 
-**11j-LinUCB**: Contextual bandit (LinUCB algorithm) for adaptive delay pattern selection. Code exists at `pkg/fuzzer/linucb.go` — 4 arms (no delay, random, between-calls, around-locks), 8-dimensional feature vector, Sherman-Morrison incremental inverse update, alpha annealing. **Not yet wired into fuzzing loop.**
+**11j-LinUCB**: Contextual bandit (LinUCB algorithm) for adaptive delay pattern selection. Code at `pkg/fuzzer/linucb.go` — 4 arms (no delay, random, between-calls, around-locks), 8-dimensional feature vector, Sherman-Morrison incremental inverse update, alpha annealing. Integrated into fuzzing loop.
 
-**11j-Spectral**: Spectral graph analysis for syscall dependency inference. Not yet implemented.
+**11j-Spectral**: Spectral graph analysis for syscall dependency inference. Implemented.
 
-### Wave 4 (11k, 11l): OZZ + Bayesian Optimization — PENDING
+### Wave 4 (11k, 11l): OZZ + Bayesian Optimization — DONE
 
-**11k-OZZ**: `sched_yield` injection for systematic concurrency exploration. Not yet implemented.
+**11k-OZZ**: `sched_yield` injection for systematic concurrency exploration. Implemented.
 
-**11l-Bayesian Optimization**: `pkg/fuzzer/bayesopt.go` — Bayesian Optimization for automated hyperparameter tuning of DEzzer parameters (decay factor, exploration weight, etc.). Code exists but not fully integrated.
+**11l-Bayesian Optimization**: `pkg/fuzzer/bayesopt.go` — Bayesian Optimization for automated hyperparameter tuning of DEzzer parameters (decay factor, exploration weight, etc.). Fully integrated.
 
 ### Key Files
 
@@ -900,7 +921,7 @@ Based on a survey of 30+ papers (CCS/NDSS/ASPLOS/USENIX 2022-2026), 39 applicabl
 | 8 | Mutation & Coverage Innovation | Week 3-4 | Write-to-freed, Op-pair TS, Multi-obj MAB, MOCK BiGRU, Cluster TS, Effective Component | **+3-12% coverage**, 2-3x high-risk bugs | **DONE** |
 | 9 | Advanced Coverage & Detection | Month 2 | KBinCov, Page-level UAF, Context-sensitive, FD, Anamnesis | **+87% binary coverage** | **DONE** |
 | 10 | Spec Auto-Generation | Month 2-3 | DeepSeek spec generation, SyzGPT seeds | **+13-18% coverage**, new syscalls | **DONE** |
-| 11 | Concurrency & Performance | Month 3 | LACE, MI scheduling, LinUCB, BayesOpt | **+38% coverage**, race conditions | **PARTIAL** |
+| 11 | Concurrency & Performance | Month 3 | LACE, MI scheduling, LinUCB, BayesOpt | **+38% coverage**, race conditions | **DONE** |
 | 12 | Comprehensive Performance Tuning | Month 3+ | DEzzer precision, BO refinement, eBPF tuning | **Systematic optimization** | **DONE** |
 | 14 | Cross-Phase Synergy | Month 3+ | DEzzer-Focus-eBPF-SyzGPT-Anamnesis integration | **Cross-subsystem optimization** | **DONE** |
 

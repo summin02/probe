@@ -211,6 +211,11 @@ class JSONTCPHandler:
             if best_name in (Vocabulary.PAD, Vocabulary.UNK) and len(top_k) > 1:
                 best_idx, best_conf = top_k[1]
                 best_name = self.servicer.vocab.decode(best_idx)
+            # Phase 14 D25: Log training data (1/100 sampling) via JSON-TCP path too.
+            with self.servicer.lock:
+                self.servicer.inference_count += 1
+                if self.servicer.collect_training_data and self.servicer.inference_count % 100 == 0:
+                    self.servicer._log_training_sample(calls, best_name)
             return _json.dumps({"call": best_name, "confidence": best_conf}).encode() + b"\n"
         elif method == "retrain":
             corpus_dir = req.get("dir", "")
@@ -252,11 +257,31 @@ def _run_json_tcp(handler: JSONTCPHandler, port: int):
 
 
 def _handle_conn(handler: JSONTCPHandler, conn):
+    """Handle a persistent TCP connection with JSON-line protocol."""
     try:
-        data = conn.recv(4096)
-        if data:
-            resp = handler.handle_request(data)
-            conn.sendall(resp)
+        conn.settimeout(300.0)  # 5-min idle timeout for persistent connections
+        buf = b""
+        while True:
+            data = conn.recv(4096)
+            if not data:
+                break  # client closed
+            buf += data
+            # Process all complete lines (JSON-line protocol).
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                if line.strip():
+                    resp = handler.handle_request(line)
+                    conn.sendall(resp)
+            # Also handle single request without trailing newline.
+            if buf.strip() and b"\n" not in buf:
+                # Check if it looks like complete JSON (ends with }).
+                stripped = buf.strip()
+                if stripped.endswith(b"}"):
+                    resp = handler.handle_request(stripped)
+                    conn.sendall(resp)
+                    buf = b""
+    except (socket.timeout, ConnectionResetError, BrokenPipeError, OSError):
+        pass
     except Exception:
         pass
     finally:

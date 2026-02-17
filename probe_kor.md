@@ -48,6 +48,24 @@
 |    - 포커스 모드에 실시간 피드백                         |
 |    - 커널 소스 수정 불필요 (기존 kprobe/tracepoint 활용) |
 |                                                       |
+|  [Phase 7-8] 고급 뮤테이션 & 커버리지 [완료]              |
+|    - MuoFuzz 연산자-쌍 Thompson Sampling                 |
+|    - SeamFuzz 클러스터 기반 TS 스케줄링                    |
+|    - MOCK BiGRU 시스콜 예측 (CUDA 서버)                   |
+|    - SeqFuzz 유효 컴포넌트 추론                           |
+|    - MobFuzz 다목적 최적화                                |
+|                                                          |
+|  [Phase 9-10] AI 스펙 자동 생성 [완료]                    |
+|    - DeepSeek 기반 syzlang 자동 생성                      |
+|    - eBPF 메트릭 갭 분석                                  |
+|                                                          |
+|  [Phase 11] 성능 & 레이스 탐지 [완료]                     |
+|    - LACE eBPF 레이스 탐지                                |
+|    - MI 시드 스케줄링                                     |
+|    - LinUCB 컨텍스트 밴딧                                 |
+|    - 베이지안 최적화 (GP)                                 |
+|    - CUSUM 서킷 브레이커                                  |
+|                                                          |
 +------------------------------------------------------+
 ```
 
@@ -593,6 +611,8 @@ cd syzkaller && make host
 
 **설계**: Python subprocess (PyTorch) TCP/JSON 서버 (Go gRPC 의존성 회피를 위한 경량 대안). Go `NgramClient`가 `tools/mock_model/server.py`에 연결. `insertCall()`에서 `PredictCall` 콜백 (50% 확률)으로 BiGRU 예측 → 예측된 syscall에 대해 `generateParticularCall()`. 5초마다 health check, 서버 불가 시 ChoiceTable 자동 fallback. UCB-1이 BiGRU vs ChoiceTable 성공률 추적 (100회 cold start 탐색).
 
+**네트워크**: 서버는 300초 유휴 타임아웃의 영구 JSON-line TCP 연결(포트 50051)을 사용합니다. Go의 NgramClient는 UCB-1 선택을 통해 BiGRU와 ChoiceTable 전략 사이에서 단일 영구 연결을 유지합니다.
+
 **매니저 연동**: `mockModelRetrainLoop` goroutine이 2시간마다 NgramClient 통해 retrain 트리거.
 
 **오버헤드**: < 1% (GPU 추론 < 1ms, RTX 3070 Ti). 학습: 2시간마다 ~30초 (논블로킹). **기대 효과**: +3-12% 커버리지 (논문 평균).
@@ -726,7 +746,7 @@ stepD() in aitriage.go:
 
 ---
 
-## Phase 11: 동시성 & 성능 최적화 — 부분 완료
+## Phase 11: 동시성 & 성능 최적화 — 완료
 
 **목표**: 동시성 버그 탐지 능력 추가 (LACE 레이스 감지, ACTOR 딜레이 주입) 및 성능 최적화 (MI 시드 스케줄링, LinUCB 컨텍스트 밴딧, 베이지안 최적화).
 
@@ -743,19 +763,19 @@ Phase 8-10 통합 중 식별된 중요 버그 수정 및 성능 개선:
 
 **11m. MI (상호 정보) 시드 스케줄링**: 프로그램 특성과 커버리지 결과 간 상호 정보를 활용한 정보 이론 기반 시드 우선순위화. `pkg/corpus/mi.go`에서 MI 기반 시드 랭킹으로 코퍼스 스케줄링 최적화.
 
-### Wave 3 (11j): ACTOR + LinUCB + 스펙트럴 그래프 — 미완료
+### Wave 3 (11j): ACTOR + LinUCB + 스펙트럴 그래프 — 완료
 
-**11j-ACTOR**: syscall 간 딜레이 주입으로 레이스 컨디션 노출 (ACTOR, USENIX Sec 2023). 미구현.
+**11j-ACTOR**: syscall 간 딜레이 주입으로 레이스 컨디션 노출 (ACTOR, USENIX Sec 2023). 구현 완료.
 
-**11j-LinUCB**: 적응형 딜레이 패턴 선택을 위한 컨텍스트 밴딧 (LinUCB 알고리즘). `pkg/fuzzer/linucb.go`에 코드 존재 — 4 arms (딜레이 없음, 랜덤, 호출 간, 락 주변), 8차원 특성 벡터, Sherman-Morrison 증분 역행렬 업데이트, alpha 어닐링. **퍼징 루프에 아직 미연결.**
+**11j-LinUCB**: 적응형 딜레이 패턴 선택을 위한 컨텍스트 밴딧 (LinUCB 알고리즘). `pkg/fuzzer/linucb.go`에 완전 통합 — 4 arms (딜레이 없음, 랜덤, 호출 간, 락 주변), 8차원 특성 벡터, Sherman-Morrison 증분 역행렬 업데이트, alpha 어닐링. 퍼징 루프에 연결 완료.
 
-**11j-스펙트럴**: syscall 의존성 추론을 위한 스펙트럴 그래프 분석. 미구현.
+**11j-스펙트럴**: syscall 의존성 추론을 위한 스펙트럴 그래프 분석. 구현 완료.
 
-### Wave 4 (11k, 11l): OZZ + 베이지안 최적화 — 미완료
+### Wave 4 (11k, 11l): OZZ + 베이지안 최적화 — 완료
 
-**11k-OZZ**: 체계적 동시성 탐색을 위한 `sched_yield` 주입. 미구현.
+**11k-OZZ**: 체계적 동시성 탐색을 위한 `sched_yield` 주입. 구현 완료.
 
-**11l-베이지안 최적화**: `pkg/fuzzer/bayesopt.go` — DEzzer 파라미터 (감쇠 인자, 탐색 가중치 등) 자동 튜닝을 위한 베이지안 최적화. 코드 존재하나 완전 통합은 미완료.
+**11l-베이지안 최적화**: `pkg/fuzzer/bayesopt.go` — DEzzer 파라미터 (감쇠 인자, 탐색 가중치 등) 자동 튜닝을 위한 베이지안 최적화. 완전 통합 완료.
 
 ### 핵심 파일
 
