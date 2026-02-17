@@ -442,6 +442,7 @@ func NewTriager(cfg mgrconfig.AITriageConfig, embCfg mgrconfig.AIEmbeddingsConfi
 	}
 	// Phase 7e: Initialize cluster state if embedding is configured.
 	if t.embeddingClient != nil {
+		t.logf("[Embedding] Initialized: model=%s provider=%s", t.embeddingClient.model, t.embeddingClient.provider)
 		t.clusters = NewClusterState(workdir)
 		// Load embedding cost from disk (separate from LLM cost).
 		embCostPath := filepath.Join(workdir, "ai-emb-cost.json")
@@ -617,7 +618,7 @@ func (t *Triager) NextBatchSec() int {
 
 // Run starts the 1-hour batch loop. Call from a goroutine.
 func (t *Triager) Run(ctx context.Context) {
-	t.logf("[Triage] Started (model=%v, provider=%v)", t.cfg.Model, detectProvider(t.cfg))
+	t.logf("[Triage] Initialized: model=%s provider=%s", t.cfg.Model, detectProvider(t.cfg))
 
 	// Run first batch after 2 minutes (let fuzzer warm up).
 	firstDelay := 2 * time.Minute
