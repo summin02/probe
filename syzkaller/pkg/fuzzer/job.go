@@ -161,6 +161,9 @@ func mutateProgRequest(fuzzer *Fuzzer, rnd *rand.Rand) *queue.Request {
 		}
 	}
 
+	// PROBE: Phase 15 — track whether BiGRU was used for UCB-1 feedback.
+	usedBiGRU := mutOpts.PredictCall != nil
+
 	return &queue.Request{
 		Prog:         newP,
 		ExecOpts:     setFlags(flatrpc.ExecFlagCollectSignal),
@@ -169,6 +172,7 @@ func mutateProgRequest(fuzzer *Fuzzer, rnd *rand.Rand) *queue.Request {
 		SubOp:        subOp,        // PROBE: Phase 12 B4 — carry sub-op for two-level feedback
 		DelayPattern: delayPattern, // PROBE: Phase 11j — carry delay pattern for LinUCB feedback
 		SchedArm:     schedArm,     // PROBE: Phase 11k — carry schedTS arm for Global TS feedback
+		UsedBiGRU:    usedBiGRU,    // PROBE: Phase 15 — UCB-1 feedback tracking
 	}
 }
 

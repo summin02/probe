@@ -1262,6 +1262,7 @@ void execute_one()
 	// Invalidate so ebpf_init() re-opens them on next execution.
 	ebpf_metrics_fd = -1;
 	ebpf_freed_fd = -1;
+	ebpf_seen_stacks_fd = -1; // Phase 15: fix stale fd after close_fds
 #endif
 
 	write_extra_output();

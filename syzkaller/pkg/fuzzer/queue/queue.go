@@ -57,6 +57,9 @@ type Request struct {
 	// -1 = no strategy decision, 0-3 = SchedTS arm.
 	SchedArm int
 
+	// PROBE: Phase 15 — UCB-1 feedback: true if BiGRU prediction was used for this mutation.
+	UsedBiGRU bool
+
 	// Avoid specifies set of executors that are preferable to avoid when executing this request.
 	// The restriction is soft since there can be only one executor at all or available right now.
 	Avoid []ExecutorID

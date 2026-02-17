@@ -92,6 +92,10 @@ type Fuzzer struct {
 	// PROBE: Phase 11l — Bayesian Optimization for hyperparameter tuning.
 	bayesOpt *BayesOpt
 
+	// PROBE: Phase 15 — BO-tunable parameters (atomic for lock-free access).
+	boFocusBudgetPct  atomic.Int64 // focus budget cap percentage (default 30, BO param[1])
+	boSmashExplorePct atomic.Int64 // explore probability percentage (default 0 = use hardcoded 0.95 mutate rate)
+
 	// PROBE: Phase 12 A2 — last mutation operator for pair TS conditioning.
 	lastMutOp atomic.Value // stores string; ~15ns per Load/Store
 
@@ -128,6 +132,7 @@ func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 		raceStartTime: time.Now(),
 	}
 	f.epochResetTime.Store(time.Now()) // Phase 14 D26: Initialize epoch timer
+	f.boFocusBudgetPct.Store(30)       // Phase 15: default focus budget cap 30%
 	f.dezzer = NewDEzzer(f.Logf)
 	f.dezzer.entropyRef = &f.coverageEntropy  // Phase 12 B1: lock-free entropy access
 	f.dezzer.configVersion = 2                 // Phase 14 W1-D4: v2 = 10 clusters (was 6)
@@ -268,6 +273,16 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 			// Phase 12 B1: Pass actual cluster for FeatureTuple enrichment.
 			cluster := classifyProgram(req.Prog)
 			fuzzer.dezzer.RecordResult(req.MutOp, req.MutOp, req.SubOp, covGain, SourceMutate, cluster)
+		}
+
+		// PROBE: Phase 15 — UCB-1 feedback: record BiGRU vs ChoiceTable success.
+		if fuzzer.ngramClient != nil && req.Stat == fuzzer.statExecFuzz {
+			success := len(triage) > 0
+			if req.UsedBiGRU {
+				fuzzer.ngramClient.RecordBiGRUResult(success)
+			} else {
+				fuzzer.ngramClient.RecordCTResult(success)
+			}
 		}
 
 		if len(triage) != 0 {
@@ -725,6 +740,10 @@ func (fuzzer *Fuzzer) genFuzz() *queue.Request {
 		// more frequently because fallback signal is weak.
 		mutateRate = 0.5
 	}
+	// Phase 15: Apply BO-tuned explore probability when active.
+	if explorePct := fuzzer.boSmashExplorePct.Load(); explorePct > 0 {
+		mutateRate = 1.0 - float64(explorePct)/100.0
+	}
 	var req *queue.Request
 	rnd := fuzzer.rand()
 	if rnd.Float64() < mutateRate {
@@ -924,7 +943,8 @@ func (fuzzer *Fuzzer) drainFocusPending() {
 	// Check epoch budget first (30% cap per 5-min window)
 	epochTotal := fuzzer.epochTotalExecs.Load()
 	epochFocus := fuzzer.epochFocusExecs.Load()
-	if epochTotal > 100 && epochFocus*100/epochTotal > 30 {
+	budgetPct := fuzzer.boFocusBudgetPct.Load() // Phase 15: BO-tunable focus budget
+	if epochTotal > 100 && epochFocus*100/epochTotal > budgetPct {
 		fuzzer.statFocusBudgetSkip.Add(1)
 		time.AfterFunc(time.Minute, func() {
 			fuzzer.drainFocusPending()
@@ -935,7 +955,7 @@ func (fuzzer *Fuzzer) drainFocusPending() {
 	// Phase 11g: Lifetime budget cap (secondary guardrail) — skip if focus exceeds 30% of total executions.
 	total := fuzzer.totalExecCount.Load()
 	focusExecs := fuzzer.focusExecCount.Load()
-	if total > 1000 && focusExecs*100/total > 30 {
+	if total > 1000 && focusExecs*100/total > budgetPct {
 		fuzzer.statFocusBudgetSkip.Add(1)
 		// Retry after 1 minute.
 		time.AfterFunc(time.Minute, func() {
@@ -1586,8 +1606,10 @@ func (fuzzer *Fuzzer) CoverageEntropy() int64 {
 // Phase 12 C1: Extended from 5 to 8 parameters with EMA transition for decay changes.
 func (fuzzer *Fuzzer) applyBOParams(params [boNumParams]float64) {
 	// param[0]: delayInjectionRate — stored for use in mutateProgRequest
-	// param[1]: focusBudgetFrac — not directly settable (TODO: Phase 14)
-	// param[2]: smashExploreProb — not directly settable (TODO: Phase 14)
+	// param[1]: focusBudgetFrac — Phase 15: wired to focus budget cap.
+	fuzzer.boFocusBudgetPct.Store(int64(params[1] * 100))
+	// param[2]: smashExploreProb — Phase 15: wired to explore probability in genFuzz.
+	fuzzer.boSmashExplorePct.Store(int64(params[2] * 100))
 	// param[3]: cusumThreshold — apply to DEzzer
 	// param[4]: deflakeMaxRuns — stored for use in triage
 	// param[5]: dezzerDecayFactor — apply to DEzzer (EMA transition)
