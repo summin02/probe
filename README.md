@@ -203,6 +203,7 @@ go test ./pkg/fuzzer/...   # Specific package
 | LACE Race Detection | eBPF-based concurrent access pattern detection | Done |
 | Bayesian Optimization | Gaussian Process hyperparameter tuning | Done |
 | LinUCB Arm Selection | Contextual bandit for mutation strategy routing | Done |
+| Phase 12 Performance Tuning | DEzzer precision, cross-product TS, BO 8D, eBPF map tuning | Done |
 | Binary Coverage | KBinCov binary-level coverage tracking | Planned |
 | Concurrency Testing | Full ACTOR delay injection + OZZ sched_yield | Partial |
 
@@ -256,10 +257,14 @@ syzkaller/                  # Modified syzkaller (all PROBE changes here)
 
 ## Related Research
 
-PROBE integrates and adapts techniques from the following kernel fuzzing and security research:
+PROBE integrates and adapts techniques from the following research:
 
 | Paper | Venue | Key Contribution |
 |-------|-------|------------------|
+| Page | Biometrika 1954 | CUSUM change-point detection for DEzzer adaptive reset |
+| Nelder & Mead | Computer Journal 1965 | Simplex optimization for Bayesian hyperparameter tuning |
+| Auer et al. | ML 2002 | UCB-1 multi-armed bandit for BiGRU vs ChoiceTable selection |
+| Li et al. | WWW 2010 | LinUCB contextual bandit for mutation strategy routing |
 | SyzScope | USENIX Security 2022 | 15% of "low-risk" bugs are actually high-risk; exploit-oriented crash re-evaluation |
 | GREBE | IEEE S&P 2022 | 6 "unexploitable" bugs → arbitrary code execution; variant diversity motivation |
 | MobFuzz | NDSS 2022 | Multi-objective MAB optimization, 3x bug discovery (user-space, adapted for kernel) |
@@ -502,6 +507,7 @@ go test ./pkg/fuzzer/...   # 특정 패키지
 | LACE 레이스 탐지 | eBPF 기반 동시 접근 패턴 탐지 | 완료 |
 | 베이지안 최적화 | 가우시안 프로세스 하이퍼파라미터 튜닝 | 완료 |
 | LinUCB 암 선택 | 컨텍스트 밴딧 기반 뮤테이션 전략 라우팅 | 완료 |
+| Phase 12 성능 튜닝 | DEzzer 정밀도, 교차 TS, BO 8D, eBPF 맵 튜닝 | 완료 |
 | 바이너리 커버리지 | KBinCov 바이너리 레벨 커버리지 추적 | 계획됨 |
 | 동시성 테스트 | 전체 ACTOR 딜레이 인젝션 + OZZ sched_yield | 부분 |
 
@@ -555,10 +561,14 @@ syzkaller/                  # 수정된 syzkaller (모든 PROBE 변경사항)
 
 ## 관련 연구
 
-PROBE는 아래 커널 퍼징 및 보안 연구의 기술을 통합/적용합니다:
+PROBE는 아래 연구의 기술을 통합/적용합니다:
 
 | 논문 | 학회 | 주요 기여 |
 |------|------|----------|
+| Page | Biometrika 1954 | CUSUM 변화점 탐지 — DEzzer 적응형 리셋 |
+| Nelder & Mead | Computer Journal 1965 | 심플렉스 최적화 — 베이지안 하이퍼파라미터 튜닝 |
+| Auer et al. | ML 2002 | UCB-1 멀티암드 밴딧 — BiGRU vs ChoiceTable 선택 |
+| Li et al. | WWW 2010 | LinUCB 컨텍스트 밴딧 — 뮤테이션 전략 라우팅 |
 | SyzScope | USENIX Security 2022 | "저위험" 버그의 15%가 실제로는 고위험; 익스플로잇 관점 크래시 재평가 |
 | GREBE | IEEE S&P 2022 | "익스플로잇 불가" 버그 6개 → 임의 코드 실행; 변형 다양성의 중요성 |
 | MobFuzz | NDSS 2022 | 다목적 MAB 최적화, 버그 발견 3배 (유저스페이스, 커널 적응) |
