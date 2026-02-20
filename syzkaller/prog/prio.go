@@ -356,6 +356,10 @@ func (ct *ChoiceTable) choose(r *rand.Rand, bias int) int {
 	}
 	run := ct.runs[bias]
 	runSum := int(run[len(run)-1])
+	if runSum <= 0 {
+		// All priorities zero for this bias — fall back to random selection.
+		return ct.calls[r.Intn(len(ct.calls))].ID
+	}
 	x := int32(r.Intn(runSum) + 1)
 	res := sort.Search(len(run), func(i int) bool {
 		return run[i] >= x
