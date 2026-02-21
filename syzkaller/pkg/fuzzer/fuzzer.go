@@ -51,7 +51,7 @@ type Fuzzer struct {
 	focusActive    bool               // true while a focus job is running
 	focusTarget    string             // title of the current focus target
 	focusPending   []focusCandidate   // queued candidates waiting for current focus to finish
-	lastEbpfFocus  time.Time          // cooldown for eBPF-triggered focus (prevent over-triggering)
+	lastEbpfFocus  atomic.Value       // time.Time — cooldown for eBPF-triggered focus (atomic for hot-path read)
 	focusExecCount atomic.Int64       // total focus executions (for budget cap)
 	totalExecCount atomic.Int64       // total executions (for budget cap)
 
@@ -82,6 +82,7 @@ type Fuzzer struct {
 	raceSchedThreshold uint32       // sched_switch threshold
 	raceFocusPending   []focusCandidate // independent race Focus queue (max 2)
 	raceStartTime      time.Time    // when LACE started (for 24h threshold logic)
+	raceSamples        []uint32     // lock contention samples for P90 calibration
 
 	// PROBE: Phase 11j — LinUCB delay pattern bandit (separate from DEzzer).
 	linucb       *LinUCB
@@ -273,10 +274,10 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 			if len(triage) > 0 {
 				covGain = len(triage)
 			}
-			// Phase 12 A2: Pass req.MutOp as prevOp for pair TS conditioning.
+			// Phase 12 A2: Pass req.PrevMutOp as prevOp for pair TS conditioning.
 			// Phase 12 B1: Pass actual cluster for FeatureTuple enrichment.
 			cluster := classifyProgram(req.Prog)
-			fuzzer.dezzer.RecordResult(req.MutOp, req.MutOp, req.SubOp, covGain, SourceMutate, cluster)
+			fuzzer.dezzer.RecordResult(req.MutOp, req.PrevMutOp, req.SubOp, covGain, SourceMutate, cluster)
 		}
 
 		// PROBE: Phase 15 — UCB-1 feedback: record BiGRU vs ChoiceTable success.
@@ -371,9 +372,11 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 		}
 
 		// Cooldown check shared by double-free and UAF focus triggers.
-		fuzzer.focusMu.Lock()
-		ebpfCooldownOk := time.Since(fuzzer.lastEbpfFocus) >= 5*time.Minute
-		fuzzer.focusMu.Unlock()
+		// Atomic read — no lock needed on hot path.
+		ebpfCooldownOk := true
+		if last, ok := fuzzer.lastEbpfFocus.Load().(time.Time); ok {
+			ebpfCooldownOk = time.Since(last) >= 5*time.Minute
+		}
 
 		// PROBE: Best-of-N Focus trigger — only the highest-priority trigger from
 		// a single execution becomes a Focus candidate. Prevents cascading 4x bursts.
@@ -395,10 +398,10 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 		}
 		// Non-crashing UAF detection: high UAF score without crash → UAF-favorable pattern.
 		// P0-2 fix: count UAF detections unconditionally (outside cooldown check).
-		if res.Info.EbpfUafScore >= 70 && res.Status != queue.Hanged {
+		if res.Info.EbpfUafScore >= 90 && res.Status != queue.Hanged {
 			fuzzer.statEbpfUafDetected.Add(1)
 		}
-		if res.Info.EbpfUafScore >= 70 && res.Status != queue.Hanged && ebpfCooldownOk {
+		if res.Info.EbpfUafScore >= 90 && res.Status != queue.Hanged && ebpfCooldownOk {
 			fuzzer.Logf(0, "PROBE: eBPF detected UAF-favorable pattern (score=%d, reuse=%d, rapid=%d) in %s",
 				res.Info.EbpfUafScore, res.Info.EbpfReuseCount,
 				res.Info.EbpfRapidReuseCount, req.Prog)
@@ -504,10 +507,24 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 			fuzzer.statRaceConcurrentAccess.Add(int(res.Info.EbpfConcurrentAccess))
 		}
 		// LACE race Focus trigger (independent 3-min cooldown, separate from memory 5-min).
-		// First 24 hours: threshold=0 (log all contention>0), after 24h use raceThreshold (P90).
+		// P90 auto-calibration: collect lock contention samples, compute P90 every 500 samples.
 		if res.Info.EbpfLockContention > 0 && res.Status != queue.Hanged {
 			fuzzer.focusMu.Lock()
 			raceCooldownOk := time.Since(fuzzer.lastRaceFocus) >= 3*time.Minute
+			// Record sample for P90 calibration.
+			fuzzer.raceSamples = append(fuzzer.raceSamples, res.Info.EbpfLockContention)
+			if len(fuzzer.raceSamples) >= 500 {
+				sorted := make([]uint32, len(fuzzer.raceSamples))
+				copy(sorted, fuzzer.raceSamples)
+				sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+				p90 := sorted[len(sorted)*90/100]
+				if p90 > 0 {
+					fuzzer.raceThreshold = p90
+					fuzzer.Logf(0, "PROBE: LACE raceThreshold auto-calibrated to P90=%d (from %d samples)", p90, len(sorted))
+				}
+				// Keep last 250 for rolling window.
+				fuzzer.raceSamples = append([]uint32{}, fuzzer.raceSamples[len(fuzzer.raceSamples)-250:]...)
+			}
 			raceThresh := fuzzer.raceThreshold
 			fuzzer.focusMu.Unlock()
 
@@ -914,7 +931,7 @@ func (fuzzer *Fuzzer) AddFocusCandidate(p *prog.Prog, title string, tier int) bo
 		return false
 	}
 
-	fuzzer.lastEbpfFocus = time.Now()
+	fuzzer.lastEbpfFocus.Store(time.Now())
 	fuzzer.launchFocusJob(p, title, tier)
 
 	// PROBE: Also run fault injection on crash program's calls.
@@ -980,6 +997,11 @@ func (fuzzer *Fuzzer) drainFocusPending() {
 	if epochTotal > 100 && epochFocus*100/epochTotal > budgetPct {
 		fuzzer.statFocusBudgetSkip.Add(1)
 		time.AfterFunc(time.Minute, func() {
+			select {
+			case <-fuzzer.ctx.Done():
+				return
+			default:
+			}
 			fuzzer.drainFocusPending()
 		})
 		return
@@ -992,6 +1014,11 @@ func (fuzzer *Fuzzer) drainFocusPending() {
 		fuzzer.statFocusBudgetSkip.Add(1)
 		// Retry after 1 minute.
 		time.AfterFunc(time.Minute, func() {
+			select {
+			case <-fuzzer.ctx.Done():
+				return
+			default:
+			}
 			fuzzer.drainFocusPending()
 		})
 		return
@@ -1001,12 +1028,21 @@ func (fuzzer *Fuzzer) drainFocusPending() {
 	defer fuzzer.focusMu.Unlock()
 
 	// Enforce cooldown between focus jobs (prevents back-to-back monopolization).
-	if time.Since(fuzzer.lastEbpfFocus) < 2*time.Minute {
+	lastFocus := time.Time{}
+	if v, ok := fuzzer.lastEbpfFocus.Load().(time.Time); ok {
+		lastFocus = v
+	}
+	if time.Since(lastFocus) < 2*time.Minute {
 		// H6 fix: schedule a timer to retry after cooldown expires,
 		// preventing candidates from being orphaned in the pending queue.
-		if len(fuzzer.focusPending) > 0 {
-			remaining := 2*time.Minute - time.Since(fuzzer.lastEbpfFocus) + time.Second
+		if len(fuzzer.focusPending) > 0 || len(fuzzer.raceFocusPending) > 0 {
+			remaining := 2*time.Minute - time.Since(lastFocus) + time.Second
 			time.AfterFunc(remaining, func() {
+				select {
+				case <-fuzzer.ctx.Done():
+					return
+				default:
+				}
 				fuzzer.drainFocusPending()
 			})
 		}
@@ -1021,8 +1057,24 @@ func (fuzzer *Fuzzer) drainFocusPending() {
 			continue // already focused (D21+D27: cross-trigger dedup)
 		}
 		fuzzer.launchFocusJob(c.prog, c.title, c.tier)
-		fuzzer.lastEbpfFocus = time.Now()
+		fuzzer.lastEbpfFocus.Store(time.Now())
 		fuzzer.Logf(0, "PROBE: focus dequeued '%v' (remaining: %d)", c.title, len(fuzzer.focusPending))
+		return
+	}
+
+	// Fix: drain raceFocusPending (was never consumed — dead queue bug).
+	// Race candidates also go through best-of-N, but this queue enables
+	// dedicated race-triggered focus jobs when the main queue is empty.
+	for len(fuzzer.raceFocusPending) > 0 {
+		c := fuzzer.raceFocusPending[0]
+		fuzzer.raceFocusPending = fuzzer.raceFocusPending[1:]
+		hash := focusProgHash(c.prog)
+		if fuzzer.focusDedup.Contains(hash) {
+			continue
+		}
+		fuzzer.launchFocusJob(c.prog, c.title, c.tier)
+		fuzzer.lastEbpfFocus.Store(time.Now())
+		fuzzer.Logf(0, "PROBE: race-focus dequeued '%v' (remaining: %d)", c.title, len(fuzzer.raceFocusPending))
 		return
 	}
 }
@@ -1464,9 +1516,9 @@ func (fuzzer *Fuzzer) recordObjectiveReward(info *flatrpc.ProgInfo, covGain int)
 			reward = 1.0
 		}
 	}
-	if reward > 0 {
-		fuzzer.dezzer.RecordObjectiveReward(reward)
-	}
+	// Always record reward (even zero) so objCounts reflects actual pull count.
+	// Without this, UCB-1 treats zero-reward objectives as unexplored → permanent lock.
+	fuzzer.dezzer.RecordObjectiveReward(reward)
 }
 
 // Phase 8e: Kernel subsystem cluster constants.

@@ -1013,8 +1013,9 @@ void execute_one()
 	// the executor first starts. Retry in each child process (cheap syscall).
 	if (ebpf_metrics_fd < 0)
 		ebpf_init();
-	// PROBE: Clear stale eBPF metrics before execution
-	ebpf_read_and_reset();
+	// PROBE: Pre-exec read removed — epoch-based filtering already handles stale data,
+	// and the periodic UPDATE (every 10th exec) zeros the counters.
+	// Saves 1 BPF_MAP_LOOKUP_ELEM syscall per execution.
 #endif
 	if (flag_snapshot)
 		SnapshotStart();

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,6 +29,8 @@ const (
 	ngramMaxFailures      = 3   // consecutive failures before bypass
 	ngramBypassCooldown   = 10 * time.Second
 	ngramTCPKeepAlive     = 15 * time.Second
+	ngramCacheSize        = 256 // LRU cache for prediction results
+	ngramCacheTTL         = 30 * time.Second // cache entry TTL
 )
 
 // NgramClient is a lightweight TCP/JSON client for the MOCK BiGRU server.
@@ -53,7 +56,18 @@ type NgramClient struct {
 	ctWins      int64
 	ctTrials    int64
 
+	// Prediction cache: avoids synchronous TCP on mutation hot path.
+	predCache   map[string]predCacheEntry
+	predCacheMu sync.RWMutex
+
 	logf func(level int, msg string, args ...any)
+}
+
+// predCacheEntry stores a cached prediction result with TTL.
+type predCacheEntry struct {
+	call       string
+	confidence float64
+	ts         time.Time
 }
 
 // ngramRequest is the JSON request sent to the Python server.
@@ -77,15 +91,17 @@ func NewNgramClient(addr string, logf func(level int, msg string, args ...any)) 
 		addr = ngramDefaultAddr
 	}
 	c := &NgramClient{
-		addr: addr,
-		logf: logf,
-		done: make(chan struct{}),
+		addr:      addr,
+		logf:      logf,
+		done:      make(chan struct{}),
+		predCache: make(map[string]predCacheEntry, ngramCacheSize),
 	}
 	go c.healthLoop()
 	return c
 }
 
 // PredictNextCall returns the BiGRU's predicted next syscall given a context.
+// Uses LRU cache to avoid synchronous TCP on mutation hot path.
 // Returns ("", 0, nil) if the server is unavailable or confidence is too low.
 func (c *NgramClient) PredictNextCall(calls []string) (string, float64, error) {
 	c.mu.Lock()
@@ -96,19 +112,58 @@ func (c *NgramClient) PredictNextCall(calls []string) (string, float64, error) {
 		return "", 0, nil
 	}
 
+	// Cache lookup: use last 3 calls as key (covers most context).
+	cacheKey := c.makeCacheKey(calls)
+	c.predCacheMu.RLock()
+	if entry, ok := c.predCache[cacheKey]; ok && time.Since(entry.ts) < ngramCacheTTL {
+		c.predCacheMu.RUnlock()
+		return entry.call, entry.confidence, nil
+	}
+	c.predCacheMu.RUnlock()
+
+	// Cache miss: synchronous TCP call.
 	resp, err := c.send(ngramRequest{Method: "predict", Calls: calls})
 	if err != nil {
 		c.mu.Lock()
 		c.healthy = false
 		c.mu.Unlock()
-		return "", 0, nil // silent fallback
+		return "", 0, nil
 	}
 
 	if resp.Error != "" || resp.Confidence < ngramMinConfidence {
 		return "", 0, nil
 	}
 
+	// Store in cache.
+	c.predCacheMu.Lock()
+	if len(c.predCache) >= ngramCacheSize {
+		// Evict oldest entries (simple: clear half).
+		count := 0
+		for k := range c.predCache {
+			delete(c.predCache, k)
+			count++
+			if count >= ngramCacheSize/2 {
+				break
+			}
+		}
+	}
+	c.predCache[cacheKey] = predCacheEntry{
+		call:       resp.Call,
+		confidence: resp.Confidence,
+		ts:         time.Now(),
+	}
+	c.predCacheMu.Unlock()
+
 	return resp.Call, resp.Confidence, nil
+}
+
+// makeCacheKey creates a cache key from the last few calls in context.
+func (c *NgramClient) makeCacheKey(calls []string) string {
+	n := len(calls)
+	if n > 3 {
+		calls = calls[n-3:]
+	}
+	return strings.Join(calls, "|")
 }
 
 // RecordBiGRUResult records whether the BiGRU's prediction led to success.

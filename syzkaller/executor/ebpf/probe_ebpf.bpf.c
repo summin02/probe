@@ -349,8 +349,7 @@ int BPF_KRETPROBE(kretprobe_cache_alloc, void *ret)
 // is being written to a freed kernel object.
 //
 // Strategy: cross-reference destination address with freed_objects LRU map.
-// Check exact address + common slab-aligned addresses (64, 128, 256, 512, 1024 bytes)
-// to handle writes to offsets within freed objects.
+// Optimized: check exact + 2 most common slab alignments (64, 256 bytes).
 // Time window: 200ms to prevent stale false positives.
 SEC("kprobe/_copy_from_user")
 int BPF_KPROBE(kprobe_copy_from_user, void *to, const void *from, unsigned long n)
@@ -360,29 +359,21 @@ int BPF_KPROBE(kprobe_copy_from_user, void *to, const void *from, unsigned long 
 	if (!m || m->execution_start_ns == 0)
 		return 0;
 
+	// Early exit: skip if no objects have been freed this execution.
+	if (m->free_count == 0)
+		return 0;
+
 	__u64 dst = (__u64)to;
 
-	// Check if destination matches a recently freed object.
-	// Try exact address, then common slab-aligned addresses.
+	// Check exact address, then 2 most common slab alignments (64, 256).
+	// Reduced from 6 lookups to 3 for ~50% overhead reduction.
 	__u64 *free_ts = bpf_map_lookup_elem(&freed_objects, &dst);
 	if (!free_ts) {
 		__u64 aligned = dst & ~63ULL;  // 64-byte slab alignment
 		free_ts = bpf_map_lookup_elem(&freed_objects, &aligned);
 	}
 	if (!free_ts) {
-		__u64 aligned = dst & ~127ULL; // 128-byte slab alignment
-		free_ts = bpf_map_lookup_elem(&freed_objects, &aligned);
-	}
-	if (!free_ts) {
 		__u64 aligned = dst & ~255ULL; // 256-byte slab alignment
-		free_ts = bpf_map_lookup_elem(&freed_objects, &aligned);
-	}
-	if (!free_ts) {
-		__u64 aligned = dst & ~511ULL; // 512-byte slab alignment
-		free_ts = bpf_map_lookup_elem(&freed_objects, &aligned);
-	}
-	if (!free_ts) {
-		__u64 aligned = dst & ~1023ULL; // 1024-byte slab alignment
 		free_ts = bpf_map_lookup_elem(&freed_objects, &aligned);
 	}
 	if (!free_ts)
@@ -559,30 +550,40 @@ int trace_sched_switch(struct trace_event_raw_sched_switch *ctx)
 }
 
 // Measure mutex lock contention: record entry timestamp.
+// 1/16 sampling to reduce overhead on ultra-hot lock paths.
 SEC("kprobe/mutex_lock")
 int BPF_KPROBE(kprobe_mutex_lock, void *lock)
 {
+	__u64 lock_addr = (__u64)lock;
+	if ((lock_addr & 0xf) != 0) // 1/16 sampling
+		return 0;
+
 	__u32 key = 0;
 	struct probe_metrics *m = bpf_map_lookup_elem(&metrics, &key);
 	if (!m || m->execution_start_ns == 0)
 		return 0;
 
 	__u64 ts = bpf_ktime_get_ns();
-	__u64 lock_addr = (__u64)lock;
 	bpf_map_update_elem(&lock_entry_ts, &lock_addr, &ts, BPF_ANY);
 	return 0;
 }
 
 // Measure mutex unlock: check if lock was held long enough to indicate contention.
+// 1/16 sampling (matches kprobe_mutex_lock).
 SEC("kretprobe/mutex_lock")
 int BPF_KRETPROBE(kretprobe_mutex_lock)
 {
+	// Note: kretprobe cannot access original args, so we use pid-based sampling
+	// to approximately match the kprobe sampling rate.
+	__u64 pidtgid = bpf_get_current_pid_tgid();
+	if ((pidtgid & 0xf) != 0) // 1/16 sampling
+		return 0;
+
 	__u32 key = 0;
 	struct probe_metrics *m = bpf_map_lookup_elem(&metrics, &key);
 	if (!m || m->execution_start_ns == 0)
 		return 0;
 
-	// Increment lock_held counter on successful acquisition.
 	__u64 *held = bpf_map_lookup_elem(&lock_held, &key);
 	if (held)
 		__sync_fetch_and_add(held, 1);
@@ -590,25 +591,27 @@ int BPF_KRETPROBE(kretprobe_mutex_lock)
 	return 0;
 }
 
+// 1/16 sampling to match kprobe_mutex_lock.
 SEC("kprobe/mutex_unlock")
 int BPF_KPROBE(kprobe_mutex_unlock, void *lock)
 {
+	__u64 lock_addr = (__u64)lock;
+	if ((lock_addr & 0xf) != 0) // 1/16 sampling
+		return 0;
+
 	__u32 key = 0;
 	struct probe_metrics *m = bpf_map_lookup_elem(&metrics, &key);
 	if (!m || m->execution_start_ns == 0)
 		return 0;
 
-	// Decrement lock_held counter.
 	__u64 *held = bpf_map_lookup_elem(&lock_held, &key);
 	if (held && *held > 0)
 		__sync_fetch_and_add(held, -1ULL);
 
-	// Check contention: if mutex_lock took >1us, it's contention.
-	__u64 lock_addr = (__u64)lock;
 	__u64 *entry_ts = bpf_map_lookup_elem(&lock_entry_ts, &lock_addr);
 	if (entry_ts) {
 		__u64 now = bpf_ktime_get_ns();
-		if (now - *entry_ts > 1000) // >1us = contention
+		if (now - *entry_ts > 1000)
 			__sync_fetch_and_add(&m->lock_contention_count, 1);
 		bpf_map_delete_elem(&lock_entry_ts, &lock_addr);
 	}
@@ -616,19 +619,22 @@ int BPF_KPROBE(kprobe_mutex_unlock, void *lock)
 }
 
 // Spinlock contention detection via raw_spin_lock / raw_spin_unlock.
+// 1/16 sampling — spinlocks fire 100K+/exec, sampling is essential.
 SEC("kprobe/raw_spin_lock")
 int BPF_KPROBE(kprobe_raw_spin_lock, void *lock)
 {
+	__u64 lock_addr = (__u64)lock;
+	if ((lock_addr & 0xf) != 0) // 1/16 sampling
+		return 0;
+
 	__u32 key = 0;
 	struct probe_metrics *m = bpf_map_lookup_elem(&metrics, &key);
 	if (!m || m->execution_start_ns == 0)
 		return 0;
 
 	__u64 ts = bpf_ktime_get_ns();
-	__u64 lock_addr = (__u64)lock;
 	bpf_map_update_elem(&lock_entry_ts, &lock_addr, &ts, BPF_ANY);
 
-	// Mark lock held.
 	__u64 *held = bpf_map_lookup_elem(&lock_held, &key);
 	if (held)
 		__sync_fetch_and_add(held, 1);
@@ -636,25 +642,27 @@ int BPF_KPROBE(kprobe_raw_spin_lock, void *lock)
 	return 0;
 }
 
+// 1/16 sampling to match kprobe_raw_spin_lock.
 SEC("kprobe/raw_spin_unlock")
 int BPF_KPROBE(kprobe_raw_spin_unlock, void *lock)
 {
+	__u64 lock_addr = (__u64)lock;
+	if ((lock_addr & 0xf) != 0) // 1/16 sampling
+		return 0;
+
 	__u32 key = 0;
 	struct probe_metrics *m = bpf_map_lookup_elem(&metrics, &key);
 	if (!m || m->execution_start_ns == 0)
 		return 0;
 
-	// Decrement lock_held counter.
 	__u64 *held = bpf_map_lookup_elem(&lock_held, &key);
 	if (held && *held > 0)
 		__sync_fetch_and_add(held, -1ULL);
 
-	// Check contention timing.
-	__u64 lock_addr = (__u64)lock;
 	__u64 *entry_ts = bpf_map_lookup_elem(&lock_entry_ts, &lock_addr);
 	if (entry_ts) {
 		__u64 now = bpf_ktime_get_ns();
-		if (now - *entry_ts > 1000) // >1us = contention
+		if (now - *entry_ts > 1000)
 			__sync_fetch_and_add(&m->lock_contention_count, 1);
 		bpf_map_delete_elem(&lock_entry_ts, &lock_addr);
 	}

@@ -89,7 +89,8 @@ type BayesOpt struct {
 	nmWorst     int                    // index of worst vertex
 	nmSecWorst  int                    // index of second-worst vertex
 	nmBest      int                    // index of best vertex
-	nmReflVal   float64                // value of reflected point
+	nmReflVal    float64                // value of reflected point
+	nmWorstOrig  [boNumParams]float64  // original worst vertex saved before reflection overwrites it
 	nmLastShrink int                   // epoch of last shrink (HIGH-8: max once per 20 epochs)
 	nmStuckCount int                   // consecutive epochs where same vertex is worst
 
@@ -210,8 +211,10 @@ func (bo *BayesOpt) CheckEpoch(covTotal int64) bool {
 		return true
 	}
 
-	// Record baseline from first 2 epochs.
-	if !bo.baselineSet {
+	// Record baseline from first 2 epochs — but skip epochs 0-2 (startup burst).
+	// Burst coverage rate (epoch 0: ~380/s) would inflate the baseline, causing
+	// all subsequent epochs to fall below 70% threshold → perpetual rollback.
+	if !bo.baselineSet && bo.epoch >= 3 {
 		bo.baseRateSum += rate
 		bo.baseRateN++
 		if bo.baseRateN >= 2 {
@@ -369,9 +372,12 @@ func (bo *BayesOpt) nmStepReady() {
 		return
 	}
 
+	// Save original worst vertex before reflection overwrites it (needed for inside contraction).
+	bo.nmWorstOrig = bo.simplex[bo.nmWorst]
+
 	// Reflection: x_r = centroid + alpha * (centroid - x_worst)
 	for j := 0; j < boNumParams; j++ {
-		bo.nmReflected[j] = clampBOParam(j, bo.nmCentroid[j]+nmAlpha*(bo.nmCentroid[j]-bo.simplex[bo.nmWorst][j]))
+		bo.nmReflected[j] = clampBOParam(j, bo.nmCentroid[j]+nmAlpha*(bo.nmCentroid[j]-bo.nmWorstOrig[j]))
 	}
 	bo.nmState = nmWaitReflection
 	bo.nmEvaluate(bo.nmReflected)
@@ -407,11 +413,10 @@ func (bo *BayesOpt) nmStepAfterReflection() {
 			bo.nmContracted[j] = clampBOParam(j, bo.nmCentroid[j]+nmRho*(bo.nmReflected[j]-bo.nmCentroid[j]))
 		}
 	} else {
-		// Revert to original worst (before reflection was placed).
-		// Inside contraction: x_c = centroid + rho * (x_worst - centroid)
-		// Note: x_worst was overwritten by reflection. Use the reflected value comparison.
+		// Inside contraction: x_ic = centroid + rho * (x_worst_original - centroid)
+		// Uses saved nmWorstOrig since nmEvaluate overwrote the worst vertex with reflected point.
 		for j := 0; j < boNumParams; j++ {
-			bo.nmContracted[j] = clampBOParam(j, bo.nmCentroid[j]-nmRho*(bo.nmCentroid[j]-bo.nmReflected[j]))
+			bo.nmContracted[j] = clampBOParam(j, bo.nmCentroid[j]+nmRho*(bo.nmWorstOrig[j]-bo.nmCentroid[j]))
 		}
 	}
 	bo.nmState = nmWaitContraction

@@ -343,6 +343,9 @@ func (ct *ChoiceTable) ApplyWeights(weights map[int]float64) {
 }
 
 func (ct *ChoiceTable) choose(r *rand.Rand, bias int) int {
+	if len(ct.calls) == 0 {
+		return 0 // PROBE: guard against empty calls slice (prevents Intn(0) panic).
+	}
 	if r.Intn(100) < 5 {
 		// Let's make 5% decisions totally at random.
 		return ct.calls[r.Intn(len(ct.calls))].ID

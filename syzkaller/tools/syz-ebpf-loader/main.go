@@ -175,18 +175,33 @@ func run(bpfObj string) error {
 		}
 	}
 
-	// Phase 7c: Attach tracepoint/kmem/kmem_cache_alloc (graceful skip on failure)
-	if prog := coll.Programs["trace_cache_alloc"]; prog != nil {
-		tp, err := link.Tracepoint("kmem", "kmem_cache_alloc", prog, nil)
+	// Phase 7c: Attach kprobe/kmem_cache_alloc + kretprobe/kmem_cache_alloc (graceful skip on failure)
+	// BUG FIX: was looking for "trace_cache_alloc" (non-existent); correct names are
+	// "kprobe_cache_alloc" and "kretprobe_cache_alloc" per SEC("kprobe/kmem_cache_alloc") in BPF.
+	if prog := coll.Programs["kprobe_cache_alloc"]; prog != nil {
+		kp, err := link.Kprobe("kmem_cache_alloc", prog, nil)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "PROBE: warning: tracepoint kmem_cache_alloc failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "PROBE: warning: kprobe kmem_cache_alloc failed: %v (cross-cache alloc detection disabled)\n", err)
 		} else {
 			pin := filepath.Join(pinDir, "link_cache_alloc")
 			os.Remove(pin)
-			if err := tp.Pin(pin); err != nil {
+			if err := kp.Pin(pin); err != nil {
 				fmt.Fprintf(os.Stderr, "PROBE: warning: pin cache_alloc link: %v\n", err)
 			}
-			fmt.Fprintf(os.Stderr, "PROBE: tracepoint/kmem/kmem_cache_alloc attached\n")
+			fmt.Fprintf(os.Stderr, "PROBE: kprobe/kmem_cache_alloc attached (cross-cache alloc detection enabled)\n")
+		}
+	}
+	if prog := coll.Programs["kretprobe_cache_alloc"]; prog != nil {
+		kp, err := link.Kretprobe("kmem_cache_alloc", prog, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "PROBE: warning: kretprobe kmem_cache_alloc failed: %v\n", err)
+		} else {
+			pin := filepath.Join(pinDir, "link_cache_alloc_ret")
+			os.Remove(pin)
+			if err := kp.Pin(pin); err != nil {
+				fmt.Fprintf(os.Stderr, "PROBE: warning: pin cache_alloc_ret link: %v\n", err)
+			}
+			fmt.Fprintf(os.Stderr, "PROBE: kretprobe/kmem_cache_alloc attached\n")
 		}
 	}
 

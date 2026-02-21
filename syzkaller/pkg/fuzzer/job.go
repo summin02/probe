@@ -169,6 +169,7 @@ func mutateProgRequest(fuzzer *Fuzzer, rnd *rand.Rand) *queue.Request {
 		ExecOpts:     setFlags(flatrpc.ExecFlagCollectSignal),
 		Stat:         fuzzer.statExecFuzz,
 		MutOp:        op,           // PROBE: carry operator to processResult for DEzzer feedback
+		PrevMutOp:    prevOp,       // PROBE: Phase 12 A2 — carry prev op for pair TS conditioning
 		SubOp:        subOp,        // PROBE: Phase 12 B4 — carry sub-op for two-level feedback
 		DelayPattern: delayPattern, // PROBE: Phase 11j — carry delay pattern for LinUCB feedback
 		SchedArm:     schedArm,     // PROBE: Phase 11k — carry schedTS arm for Global TS feedback
@@ -657,7 +658,7 @@ func (job *focusJob) run(fuzzer *Fuzzer) {
 		fuzzer.focusMu.Lock()
 		fuzzer.focusActive = false
 		fuzzer.focusTarget = ""
-		fuzzer.lastEbpfFocus = time.Now() // Reset cooldown at focus END (not start).
+		fuzzer.lastEbpfFocus.Store(time.Now()) // Reset cooldown at focus END (not start).
 		fuzzer.focusMu.Unlock()
 		// Launch next queued focus candidate if any.
 		fuzzer.drainFocusPending()

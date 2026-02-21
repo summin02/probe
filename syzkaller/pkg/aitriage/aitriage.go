@@ -1166,7 +1166,7 @@ func (t *Triager) stepC(ctx context.Context) {
 
 		call := APICall{
 			Time: time.Now(),
-			Type: "syzgpt",
+			Type: "lfs",
 		}
 
 		if err != nil {

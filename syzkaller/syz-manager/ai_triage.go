@@ -116,6 +116,22 @@ func (mgr *Manager) aiGetSnapshot() *aitriage.FuzzingSnapshot {
 		}
 	}
 
+	// PROBE: Include enabled syscalls with zero coverage so specgen (Step D)
+	// can detect truly uncovered syscalls that are absent from the corpus.
+	if f != nil {
+		if snap.SyscallCoverage == nil {
+			snap.SyscallCoverage = make(map[string]int)
+		}
+		for sc := range f.Config.EnabledCalls {
+			if sc.Attrs.Disabled {
+				continue
+			}
+			if _, exists := snap.SyscallCoverage[sc.Name]; !exists {
+				snap.SyscallCoverage[sc.Name] = 0
+			}
+		}
+	}
+
 	// Crash summaries with AI scores.
 	list, _ := mgr.crashStore.BugList()
 	for _, info := range list {

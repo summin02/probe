@@ -525,6 +525,45 @@ static struct probe_metrics ebpf_read_and_reset()
 			&update_attr, sizeof(update_attr));
 	}
 
+	// Clear freed_objects LRU every 5000 executions to prevent cross-execution
+	// contamination and UAF false positives (P0-2 fix: was causing saturation).
+	if (ebpf_exec_counter % 5000 == 0 && ebpf_freed_fd >= 0) {
+		uint64 fkey = 0, fnext_key = 0;
+		struct {
+			uint64 map_fd;
+			uint64 key;
+			uint64 next_key;
+			uint64 flags;
+		} fget_next = {};
+		struct {
+			uint64 map_fd;
+			uint64 key;
+			uint64 flags;
+		} fdelete = {};
+
+		fget_next.map_fd = (uint64)(uint32)ebpf_freed_fd;
+		fget_next.flags = 0;
+		fdelete.map_fd = (uint64)(uint32)ebpf_freed_fd;
+
+		int cleared = 0;
+		while (1) {
+			fget_next.key = (uint64)(unsigned long)&fkey;
+			fget_next.next_key = (uint64)(unsigned long)&fnext_key;
+			long ret = syscall(__NR_bpf, PROBE_BPF_MAP_GET_NEXT_KEY,
+					   &fget_next, sizeof(fget_next));
+			if (ret < 0)
+				break;
+
+			fdelete.key = (uint64)(unsigned long)&fnext_key;
+			syscall(__NR_bpf, PROBE_BPF_MAP_DELETE_ELEM,
+				&fdelete, sizeof(fdelete));
+			fkey = fnext_key;
+			cleared++;
+		}
+		debug("PROBE: freed_objects map cleared %d entries at exec=%llu\n",
+		      cleared, (unsigned long long)ebpf_exec_counter);
+	}
+
 	// Phase 14 D15: Clear seen_stacks every 10000 executions for epoch freshness.
 	// This prevents unbounded growth of context-sensitive stack traces and ensures
 	// the map only contains recent execution contexts.

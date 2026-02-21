@@ -25,7 +25,7 @@ const (
 	linucbDim      = 8  // feature vector dimension
 	linucbAlphaMax = 0.5
 	linucbAlphaMin = 0.1
-	linucbAnnealN  = 1000 // observations until alpha reaches min
+	linucbAnnealN  = 100000 // observations until alpha reaches min
 )
 
 // LinUCB implements the LinUCB contextual bandit algorithm for delay pattern selection.
@@ -63,6 +63,19 @@ func (l *LinUCB) SelectArm(features []float64) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// Copy features to fixed-size array to avoid heap allocations.
+	var featArr [linucbDim]float64
+	copy(featArr[:], features)
+
+	// Forced exploration: ensure each arm is tried at least 10 times before UCB takes over.
+	// Without this, global alpha annealing (0.5→0.1 after 1000 obs) combined with strict
+	// tie-breaking causes arms 2 and 3 to never be selected after arm 0/1 accumulate data.
+	for a := 0; a < linucbArms; a++ {
+		if l.armPicks[a] < 10 {
+			return a
+		}
+	}
+
 	bestArm := 0
 	bestScore := math.Inf(-1)
 
@@ -70,7 +83,7 @@ func (l *LinUCB) SelectArm(features []float64) int {
 		// theta_a = A_a^{-1} * b_a
 		theta := matVecMul(l.Ainv[a], l.b[a])
 		// exploitation: theta_a^T * x
-		exploit := dotProduct(theta, features)
+		exploit := dotProductArr(theta, featArr)
 		// exploration: alpha * sqrt(x^T * A_a^{-1} * x)
 		Ainvx := matVecMul(l.Ainv[a], features)
 		explore := l.alpha * math.Sqrt(math.Max(0, dotProduct(features, Ainvx)))
@@ -104,8 +117,8 @@ func (l *LinUCB) Update(arm int, features []float64, reward float64) {
 	// Sherman-Morrison update for A_a^{-1}:
 	// Ainv_new = Ainv - (Ainv * x * x^T * Ainv) / (1 + x^T * Ainv * x)
 	Ainv := l.Ainv[arm]
-	Ainvx := matVecMul(Ainv, features)
-	denom := 1.0 + dotProduct(features, Ainvx)
+	AinvxArr := matVecMul(Ainv, features)
+	denom := 1.0 + dotProduct(features, AinvxArr)
 	if denom < 1e-10 {
 		denom = 1e-10
 	}
@@ -113,7 +126,7 @@ func (l *LinUCB) Update(arm int, features []float64, reward float64) {
 	// Outer product: Ainvx * Ainvx^T / denom, subtracted from Ainv.
 	for i := 0; i < linucbDim; i++ {
 		for j := 0; j < linucbDim; j++ {
-			Ainv[i][j] -= (Ainvx[i] * Ainvx[j]) / denom
+			Ainv[i][j] -= (AinvxArr[i] * AinvxArr[j]) / denom
 		}
 	}
 
@@ -153,12 +166,11 @@ func identityMatrix(n int) [][]float64 {
 	return m
 }
 
-func matVecMul(mat [][]float64, vec []float64) []float64 {
-	n := len(vec)
-	result := make([]float64, n)
-	for i := 0; i < n; i++ {
+func matVecMul(mat [][]float64, vec []float64) [linucbDim]float64 {
+	var result [linucbDim]float64
+	for i := 0; i < linucbDim; i++ {
 		s := 0.0
-		for j := 0; j < n; j++ {
+		for j := 0; j < linucbDim; j++ {
 			s += mat[i][j] * vec[j]
 		}
 		result[i] = s
@@ -166,9 +178,17 @@ func matVecMul(mat [][]float64, vec []float64) []float64 {
 	return result
 }
 
-func dotProduct(a, b []float64) float64 {
+func dotProduct(a []float64, b [linucbDim]float64) float64 {
 	s := 0.0
-	for i := range a {
+	for i := 0; i < linucbDim; i++ {
+		s += a[i] * b[i]
+	}
+	return s
+}
+
+func dotProductArr(a, b [linucbDim]float64) float64 {
+	s := 0.0
+	for i := 0; i < linucbDim; i++ {
 		s += a[i] * b[i]
 	}
 	return s
