@@ -18,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1305,6 +1306,8 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 		go mgr.fuzzerLoop(fuzzerObj)
 		// PROBE: Phase 8d — start MOCK model retrain loop (non-blocking, auto-detects server).
 		go mgr.mockModelRetrainLoop(fuzzerObj)
+		// PROBE: LLM seed queue watcher — picks up seeds from seed_queue/ and injects into fuzzer.
+		go mgr.seedQueueWatcher(fuzzerObj)
 		if mgr.dash != nil {
 			go mgr.dashboardReporter()
 			if mgr.cfg.Reproduce {
@@ -1496,6 +1499,141 @@ func (mgr *Manager) exportCorpusForRetrain(exportDir string) error {
 	}
 	log.Logf(0, "PROBE: exported %d corpus programs for retrain", exported)
 	return nil
+}
+
+// PROBE: seedQueueWatcher watches the seed_queue/ directory for LLM-generated
+// seed programs and injects them into the fuzzer via InjectSeed().
+// Seeds are .prog files containing syzlang programs produced by the MacBook LLM pipeline.
+func (mgr *Manager) seedQueueWatcher(f *fuzzer.Fuzzer) {
+	seedDir := filepath.Join(mgr.cfg.Workdir, "seed_queue")
+	if err := os.MkdirAll(seedDir, 0755); err != nil {
+		log.Logf(0, "PROBE: seed_queue mkdir failed: %v", err)
+		return
+	}
+	feedbackPath := filepath.Join(seedDir, "feedback.jsonl")
+	log.Logf(0, "PROBE: seed queue watcher started (dir: %s)", seedDir)
+
+	for {
+		time.Sleep(10 * time.Second)
+
+		entries, err := os.ReadDir(seedDir)
+		if err != nil {
+			continue
+		}
+
+		injected := 0
+		failed := 0
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".prog" {
+				continue
+			}
+			seedPath := filepath.Join(seedDir, entry.Name())
+			data, err := os.ReadFile(seedPath)
+			if err != nil {
+				os.Remove(seedPath)
+				continue
+			}
+			progText := string(data)
+			if len(progText) == 0 {
+				os.Remove(seedPath)
+				continue
+			}
+
+			// Wrap in closure with recover() to survive panics from disabled syscalls
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Logf(0, "PROBE: seed %s caused panic (recovered): %v", entry.Name(), r)
+						failed++
+						mgr.writeSeedFeedback(feedbackPath, entry.Name(), false, false,
+							fmt.Sprintf("panic: %v", r))
+					}
+				}()
+
+				if err := f.InjectSeed(progText); err != nil {
+					// Fallback: clean LLM artifacts — strip args to ()
+					cleaned := cleanLLMSeed(progText)
+					if err2 := f.InjectSeed(cleaned); err2 != nil {
+						log.Logf(1, "PROBE: seed %s invalid: %v", entry.Name(), err)
+						failed++
+						mgr.writeSeedFeedback(feedbackPath, entry.Name(), false, false, err.Error())
+					} else {
+						log.Logf(0, "PROBE: seed %s injected (cleaned)", entry.Name())
+						injected++
+						mgr.writeSeedFeedback(feedbackPath, entry.Name(), true, false, "")
+					}
+				} else {
+					log.Logf(0, "PROBE: seed %s injected", entry.Name())
+					injected++
+					mgr.writeSeedFeedback(feedbackPath, entry.Name(), true, false, "")
+				}
+			}()
+			os.Remove(seedPath)
+		}
+
+		if injected > 0 || failed > 0 {
+			log.Logf(0, "PROBE: seed queue processed: %d injected, %d failed", injected, failed)
+		}
+	}
+}
+
+// cleanLLMSeed attempts to fix common LLM output issues to produce valid syzlang.
+// Strips placeholder arguments like (...), (ptr, ...), etc. to empty parens ().
+func cleanLLMSeed(text string) string {
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Find the syscall name (before the first '(')
+		parenIdx := strings.Index(line, "(")
+		if parenIdx < 0 {
+			continue
+		}
+		prefix := line[:parenIdx] // e.g. "r0 = socket$inet6" or "bind$inet6"
+		// Replace everything from '(' onward with "()"
+		lines = append(lines, prefix+"()")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// stripSyscallVariants removes $variant suffixes from syscall names as a last resort.
+// e.g. "openat$proc()" -> "openat()", "r0 = socket$inet6()" -> "r0 = socket()"
+func stripSyscallVariants(text string) string {
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parenIdx := strings.Index(line, "(")
+		if parenIdx < 0 {
+			continue
+		}
+		prefix := line[:parenIdx]
+		// Strip $variant from the syscall name, not from "r0 = " prefix
+		if dollarIdx := strings.LastIndex(prefix, "$"); dollarIdx >= 0 {
+			eqIdx := strings.Index(prefix, "=")
+			if eqIdx < 0 || dollarIdx > eqIdx {
+				prefix = prefix[:dollarIdx]
+			}
+		}
+		lines = append(lines, prefix+"()")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// writeSeedFeedback appends a JSON line to the feedback file for the LLM pipeline.
+func (mgr *Manager) writeSeedFeedback(feedbackPath, seedName string, valid, crash bool, errMsg string) {
+	entry := fmt.Sprintf(`{"seed":"%s","valid":%t,"crash":%t,"error":"%s","time":%d}`,
+		seedName, valid, crash, errMsg, time.Now().Unix())
+	f, err := os.OpenFile(feedbackPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.WriteString(entry + "\n")
 }
 
 func (mgr *Manager) setPhaseLocked(newPhase int) {

@@ -127,6 +127,24 @@ class MockModelServicer(mock_pb2_grpc.MockModelServicer):
                 top_k=candidates,
             )
 
+    def _model_hot_reload_loop(self):
+        """Background thread: watch for updated model files from remote training."""
+        last_mtime = 0
+        if os.path.exists(self.model_path):
+            last_mtime = os.path.getmtime(self.model_path)
+        while True:
+            time.sleep(30)  # check every 30 sec
+            if not os.path.exists(self.model_path):
+                continue
+            mtime = os.path.getmtime(self.model_path)
+            if mtime > last_mtime:
+                logger.info("Hot-reload: model file changed, reloading...")
+                with self.lock:
+                    self._load_model()
+                last_mtime = mtime
+                logger.info("Hot-reload: model reloaded (vocab=%d)",
+                            len(self.vocab) if self.vocab else 0)
+
     def _auto_train_loop(self):
         """Background thread: auto-train model from collected inference data."""
         while True:
@@ -271,6 +289,12 @@ class JSONTCPHandler:
             corpus_dir = req.get("dir", "")
             if not corpus_dir or not os.path.isdir(corpus_dir):
                 return _json.dumps({"error": f"invalid dir: {corpus_dir}"}).encode() + b"\n"
+            # Skip local retrain if model was recently updated by remote training (within 2h).
+            if os.path.exists(self.servicer.model_path):
+                age = time.time() - os.path.getmtime(self.servicer.model_path)
+                if age < 7200 and self.servicer.model is not None:
+                    logger.info("Skipping local retrain: model updated %.0fm ago by remote training", age / 60)
+                    return _json.dumps({"error": ""}).encode() + b"\n"
             result = train_model(corpus_dir, self.servicer.model_path,
                                  self.servicer.vocab_path, epochs=10,
                                  device=self.servicer.device)
@@ -345,6 +369,10 @@ def serve(port: int = DEFAULT_PORT, model_path: str = DEFAULT_MODEL_PATH,
     # Start auto-train background thread (cold-start bootstrap).
     auto_train_thread = threading.Thread(target=servicer._auto_train_loop, daemon=True)
     auto_train_thread.start()
+
+    # Start model hot-reload watcher (for remote training from MacBook).
+    reload_thread = threading.Thread(target=servicer._model_hot_reload_loop, daemon=True)
+    reload_thread.start()
 
     # Start JSON-TCP listener for Go fuzzer client (same port).
     handler = JSONTCPHandler(servicer)

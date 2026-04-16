@@ -1,0 +1,56 @@
+# === 민감 정보 (절대 커밋 금지) ===
+*_api_key.txt
+*api_key*.txt
+*.key
+*.pem
+secrets/
+.env
+.env.*
+credentials*
+.secrets
+
+# === Go 설치 디렉토리 (재설치 가능) ===
+go*.linux-amd64.tar.gz
+gopath/
+goroot/
+
+# === 커널 소스 (재다운 가능, 용량 큼) ===
+linux-*/
+linux-*.tar.*
+
+# === syzkaller 워크디렉토리 (용량 큼, 런타임 데이터) ===
+workdir/
+workdirs/
+syzkaller/workdir/
+syzkaller/workdirs/
+
+# === 빌드 산출물 ===
+*.o
+*.a
+*.so
+*.ko
+*.bak
+*.bak.*
+
+# === OMC 내부 파일 ===
+.omc/
+**/.omc/
+
+# === 임시/백업 파일 ===
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# === 에디터/IDE ===
+.vscode/
+.idea/
+*.sublime-*
+
+# === 기타 민감/재생성 가능 ===
+image/
+gpt_api_key.txt
+clude_api_key.txt
+deepseek_api_key.txt

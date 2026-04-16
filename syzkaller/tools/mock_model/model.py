@@ -15,8 +15,8 @@ class SyscallBiGRU(nn.Module):
     Architecture: Embedding(64) → BiGRU(128) → Linear → softmax over vocab.
     """
 
-    def __init__(self, vocab_size: int, embed_dim: int = 64, hidden_dim: int = 128,
-                 num_layers: int = 2, dropout: float = 0.1):
+    def __init__(self, vocab_size: int, embed_dim: int = 64, hidden_dim: int = 256,
+                 num_layers: int = 3, dropout: float = 0.15):
         super().__init__()
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
